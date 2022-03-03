@@ -1,0 +1,2174 @@
+---
+title: " - Global Model Outputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+# Name of Species being modelled
+```{r}
+# provide species name in format "Genus_species"
+spname <- ""
+```
+```{r}
+# provide relative concentration pathway for climate change data
+futureclim <- "RCP8.5"
+fclim <- 85
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "raster", "sf", "knitr", "dismo", "gam", "randomForest", "gbm")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+  path.in.general <- paste(path.root, "/input", sep = "")
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+```{r}
+memory.limit(size=25000)
+```
+
+
+####  Get the Occurrence Data
+
+```{r}
+setwd(path.in.specific)
+global.df <- read.csv(paste(spname, "_tr_global_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+head(global.df) # look at data - should include all variables
+```
+
+```{r}
+table(global.df$Species) # examine  frequencies
+```
+
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_global.RData")))
+keep
+```
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+```{r}
+setwd(path.in.general)
+stack <- get(load("bioclimstack.RData"))
+stack
+```
+
+
+
+#### Future RCP 8.5
+
+```{r}
+cmip_eightfive <- raster::getData(name = 'CMIP5', var = 'bio', res = 2.5,
+        rcp = fclim, model = 'AC', year = 70,
+        path = paste0(path.in.general, "/bioclims_CMIP5_ssp585"))
+```
+
+```{r}
+# get WorldClim bioclimatic variable rasters
+elev <- raster::getData(name = "worldclim", var = "alt", res = 2.5, lat = , lon = )
+elev
+```
+
+```{r}
+cmip_eightfive <- raster::stack(cmip_eightfive, elev)
+names(cmip_eightfive)
+```
+
+```{r}
+names(cmip_eightfive) <- names(stack)
+cmip_eightfive
+```
+
+```{r}
+cmip_eightfive
+
+# setwd(path.in.general)
+# stack_eight.five <- get(load("cmip5avestack.RData"))
+# stack_eight.five
+```
+
+
+
+# GENERALIZED LINEAR MODEL
+
+```{r}
+str(global.df) # data structure; data classes ok?
+```
+### Full–variable logistic GLM model
+build initial model all variables: mod1.LR
+
+```{r}
+mod1.LR <- glm(as.factor(Species) ~ bio1 + bio2  + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19 + alt, 
+    family = binomial, data = global.df)
+
+# model 1 summary
+  summary(mod1.LR) # full model summary stats
+```
+the deviance is what we’ll use for model fit
+```{r}
+class(mod1.LR)
+```
+```{r}
+# model 1 fit
+  mod1.fit <- 100 * (1 - mod1.LR$deviance/mod1.LR$null.deviance) # model fit
+  mod1.fit  # examine fit
+```
+```{r}
+mod1.pred <- predict(mod1.LR, type = "response") # model prediction
+
+# model 1 prediction
+head(mod1.pred) # examine prediction
+```
+```{r}
+#check: is the same?
+length(mod1.pred)
+```
+```{r}
+dim(global.df)
+```
+```{r}
+ls(mod1.LR)
+```
+### Reduced–variable logistic GLM model
+build initial model all variables: mod2.LR
+
+```{r}
+#   variable reduction: backwards
+  mod2.LR <- step(mod1.LR, trace = F) # backwards stepwise variable reduction
+# model 2 summary
+  summary(mod2.LR) # reduced model summary
+```
+
+```{r}
+mod2.fit <- 100 * (1 - mod2.LR$deviance/mod2.LR$null.deviance)
+  mod2.fit # model fit
+```
+Is the reduced model a better fit?
+```{r}
+#model 1 v. model 2 fit
+mod2.fit <- 100 * (1 - mod2.LR$deviance/mod2.LR$null.deviance)  # fit model 2
+
+(mod2.fit - mod1.fit) > 0
+```
+```{r}
+# model 2 prediction
+mod2.pred <- predict(mod2.LR, type = "response") # model prediction
+head(mod2.pred)
+```
+
+```{r}
+# model 1 v. model 2 prediction
+  head(mod1.pred) # mod 1 prediction
+```
+
+### Reduced–variable logistic GLM model with hand-picked vars
+
+```{r}
+header <- c("FNETID", "Species", "tr.Lon", "tr.Lat")
+oo <- c(header, keep)
+picked.df <- global.df %>% dplyr::select(oo)
+head(picked.df, 2)
+```
+
+#### Adjust model to inlcude only the variables you picked
+```{r}
+mod3.LR <- glm(as.factor(Species) ~ bio2  + bio5 + bio8 + bio11 +bio12 + bio15 + bio18 + alt, 
+    family = binomial, data = picked.df)
+
+# model 1 summary
+summary(mod3.LR) # full model summary stats
+```
+
+
+the deviance is what we’ll use for model fit
+```{r}
+class(mod3.LR)
+```
+```{r}
+# model 1 fit
+mod3.fit <- 100 * (1 - mod3.LR$deviance/mod3.LR$null.deviance) # model fit
+mod3.fit  # examine fit
+```
+```{r}
+mod3.pred <- predict(mod3.LR, type = "response") # model prediction
+
+# model 1 prediction
+head(mod3.pred) # examine prediction
+```
+### RESUBSTITUTION ACCURACY CALCULATIONS
+
+```{r}
+#   build testing dataframe using mod predictions
+selected_model <- mod2.LR
+modl <- "mod2.LR" # add var to keep track of model
+mod.pred <- mod2.pred
+```
+
+
+```{r}
+dat2 <- cbind(modl, global.df[2], mod.pred) # build dataframe w/mod2 predictions <- feed it your 0/1 column (pres abs)
+ head(dat2, 2) # examine prediction dataframe
+```
+
+#### determine best threshold
+
+```{r}
+# help(optimal.thresholds) # options for optimizing threshold
+mod.cut <- optimal.thresholds(dat2, opt.methods = c("MaxKappa")) # default threshold=0.5
+mod.cut # examine threshold=DEFAULT of 0.5
+```
+
+#### generate confusion matrix
+
+```{r}
+mod.cfmat <- table(dat2[[2]], factor(as.numeric(dat2$mod.pred >= mod.cut$mod.pred)))
+mod.cfmat # examine
+```
+columns = predicted rows = actual
+
+top right = false positive, bottom left = false negatives
+
+#### calculate model accuracy
+
+```{r}
+#  with standard deviation=F
+  mod.acc <- presence.absence.accuracy(dat2, threshold = mod.cut$mod.pred, st.dev = F) # stdev off in this example
+  tss <- mod.acc$sensitivity + mod.acc$specificity - 1 # code TSS metric
+  mod.acc <- cbind(mod.acc[1:7], tss) # bind all metrics
+  mod.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+sensitivity = proportion of true positives 
+specificity = proportion of true negatives 
+tss = true skill statistic 
+AUC = Area under the curve for the receiver operator characteristic.
+
+### Plotting AUC
+```{r}
+auc.roc.plot(dat2, color = "red") # basic AUC plot
+```
+### 10-FOLD VALIDATION
+```{r}
+set.seed(1234) # set and save seed if desire replicability of samples
+#library(DAAG) # load pkg for crossval
+mod.cv10 <- CVbinary(selected_model, nfolds = 10, print.details = F) # crossval w/10 folds
+# ls(glm.cv10) # examine crossval object
+head(mod.cv10$cvhat) # examine
+```
+cvhat = the cross validated estimate for observations
+
+```{r}
+ls(mod.cv10)
+```
+
+```{r}
+mod.cv10 <- mod.cv10$cvhat # assign new name to crossfold estimates
+dat2 <- cbind(dat2, mod.cv10) # bind all metrics
+head(dat2) # examine;  values added to frame
+```
+
+Is there a lot of variability? If not, then this means that the model is fairly robust to different internal validation techniques
+
+#### assume resubstitution metrics & objects from above and generate confusion matrix for 10 fold CV
+
+```{r}
+#   NOTE: using mod2.pred cutpoint from mod2.pred above
+mod.cfmatCV2 <- table(dat2[[2]], factor(as.numeric(dat2$mod.cv10 >= mod.cut$mod.pred)))
+mod.cfmatCV2 # examine & compare cfmats
+```
+```{r}
+mod.cfmat # examine & compare cfmats
+```
+
+#### calculate model accuracy
+
+```{r}
+mod.accB <- presence.absence.accuracy(dat2, threshold = mod.cut$mod.pred, st.dev = F)
+tss <- mod.accB$sensitivity + mod.accB$specificity - 1 # code TSS metric
+mod.accB <- cbind(mod.accB[1:7], tss) # bind all metrics
+mod.accB[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+  auc.roc.plot(dat2, color = T) # basic AUC plot
+```
+
+# Building Prediction Maps
+
+```{r}
+setwd(path.out.specific)
+# !!!!  WARNING  !!!! NEED DIFFERENT PREDICT FOR EACH STAT MODEL TYPE
+#   use type="prob" to obtain probability values; index of 2 grabs prob of presence=1
+#  setwd(path.mod4)
+global.probLR <- raster::predict(stack, selected_model, filename = paste0(spname, "_globalLRprob.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.probLR # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.clasLR <- reclassify(global.probLR, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.clasLR
+```
+
+#### PROBABILITY & CLASSIFICATION PLOTS
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+continents <- st_read(dsn = ".", layer = "4a7d27e1-84a3-4d6a-b4c2-6b6919f3cf4b202034-1-2zg7ul.ht5ut") # import shapefile
+```
+
+```{r}
+par(mfrow = c(1, 2))
+  plot(global.probLR, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.clasLR, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+```
+
+
+### Modify spatial map to modelling domain
+```{r}
+setwd(path.in.specific)
+global.bufptR <- raster(paste0(spname, "_global.bboxR.img"))
+global.bufptR
+```
+
+```{r}
+global.bufptR.2 <- projectRaster(global.bufptR, global.probLR, crs = crs(global.probLR), res = res(global.probLR))
+```
+
+### Multiply through the modeling domain
+
+```{r}
+global.pdom <- global.bufptR.2 * global.probLR # multiply prob raster by domain raster
+global.cdom <- global.bufptR.2 * global.clasLR # multiply clas raster by domain raster
+# map.prob2 <- pers.bufptR.wgs * map.prob
+#map.prob2 <- mask(pied.probLR, pers.bufpt.wgs)
+#plot(map.prob2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(global.pdom, legend = F, axes = T, main = "Probability Map") # plot clipped probability map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.cdom, legend = F, axes = T, main = "Classification Map") # plot clipped classified map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5)  # add state boundaries
+```
+
+### Project to Hawaii
+
+```{r}
+projCoords <- data.frame(x = c(-160.5613, -160.5393, -154.0061, -154.072, -160.5613), y = c(23.1453, 17.9578, 18.0832, 23.0259, 23.1453))
+projPoly <- sp::SpatialPolygons(list(sp::Polygons(list(sp::Polygon(projCoords)), ID=1)))
+```
+
+### PROJECT MODEL TO NEW EXTENT -CURRENT
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(stack, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, mod1.LR, filename = paste0(spname, "_globalLRproj.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasLR <- reclassify(global.proj, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.proj.clasLR
+```
+
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasLR, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+save(mod.acc, file = paste0(spname,"_global.mod.accuracy.LR.Rdata"))
+
+writeRaster(global.pdom, filename = paste0(spname,"_globalproj.pdom.LR.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, "_globalproj.cdom.LR.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, "_globalproj.pdom.LR.RData")) # save .RData
+save(global.pdom, file = paste0(spname, "_globalproj.cdom.LR.RData")) # save .RData
+
+
+
+writeRaster(global.proj, filename = paste0(spname,  "_globalproj.prob.LR.img"), overwrite = TRUE)
+writeRaster(global.proj.clasLR, filename = paste0(spname, "_globalproj.clas.LR.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname,  "_globalproj.prob.LR.RData")) # save .RData
+save(global.proj.clasLR, file = paste0(spname,  "_globalproj.clas.LR.RData")) # save .RData
+
+```
+
+### PROJECT MODEL TO NEW EXTENT -END of CENTURY RCP 8.5
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(cmip_eightfive, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, mod1.LR, filename = paste0(spname, "_globalLRproj.img"),
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasLR <- reclassify(global.proj, c(0,mod.cut[[2]],0,
+                                           mod.cut[[2]],1,1))
+global.proj.clasLR
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasLR, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+
+writeRaster(global.pdom, filename = paste0(spname, futureclim, "_globalprojHI.pdom.LR.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, futureclim,"_globalprojHI.cdom.LR.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.pdom.LR.RData")) # save .RData
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.cdom.LR.RData")) # save .RData
+
+
+writeRaster(global.proj, filename = paste0(spname, futureclim, "_globalproj.prob.LR.img"), overwrite = TRUE)
+writeRaster(global.proj.clasLR, filename = paste0(spname, futureclim, "_globalproj.clas.LR.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname, futureclim, "_globalproj.prob.LR.RData")) # save .RData
+save(global.proj.clasLR, file = paste0(spname, futureclim, "_globalproj.clas.LR.RData")) # save .RData
+
+
+```
+
+
+#GAM model
+
+### build initial model all variables without smoother (just for comparison)
+
+```{r}
+mod0.GAM <- gam(as.factor(Species) ~ bio1 + bio2  + bio3 + bio4 + bio5 + bio6 + bio7 + bio8 + bio9 + bio10 + bio11 + bio12 + bio13 + bio14 + bio15 + bio16 + bio17 + bio18 + bio19 + alt, 
+    family = binomial, data = global.df)
+
+# model summary
+  summary(mod0.GAM) # full model summary stats
+```
+### build initial model all variables: mod1.GAM
+
+```{r}
+# all smoothers using defaults df (smoothers=4) <- the default
+mod1.GAM <- gam(as.factor(Species) ~ s(bio1) + s(bio2)  + s(bio3) + s(bio4) + s(bio5) + s(bio6) + s(bio7) + s(bio8) + s(bio9) + s(bio10) + s(bio11) + s(bio12) + s(bio13) + s(bio14) + s(bio15) + s(bio16) + s(bio17) + s(bio18) + s(bio19) + s(alt), 
+    family = binomial, data = global.df)
+
+# model summary
+  summary(mod1.GAM) # full model summary stats
+```
+
+### build  model picked variables: mod2.GAM
+```{r}
+keep
+```
+
+##### Adjust text below to only include your picked variables
+```{r}
+# all smoothers using defaults df (smoothers=4) <- the default
+mod2.GAM <- gam(as.factor(Species) ~ s(bio2)  + s(bio5) + s(bio8) + s(bio11) +  s(bio12) + s(bio15) + s(bio18) + s(alt), 
+    family = binomial, data = picked.df)
+
+# model summary
+  summary(mod2.GAM) # full model summary stats
+```
+### estimate model fit
+```{r}
+  mod0.fit <- 100 * (1 - mod0.GAM$deviance/mod0.GAM$null.deviance) # model fit
+  mod1.fit <- 100 * (1 - mod1.GAM$deviance/mod1.GAM$null.deviance) # model fit
+  mod2.fit <- 100 * (1 - mod2.GAM$deviance/mod2.GAM$null.deviance) # model fit
+  mods.fit <- cbind(mod0.fit, mod1.fit, mod2.fit) # all model fits
+  mods.fit # examine
+```
+### measures of resubstitution accuracy
+```{r}
+#  library(PresenceAbsence) # load pkg for accuracy
+  mod.list <- c("mod0.GAM", "mod1.GAM", "mod2.GAM")
+  for (i in 1:length(mod.list)) {
+    pred <- predict(get(mod.list[i]), type = "response") # predict by model
+    mod.num <- mod.list[i] # assign model No. to varname
+    dat <- cbind(mod.num, global.df[2], pred) # build obs and prediction dataframe
+    cut <- optimal.thresholds(dat, opt.methods = c("MaxKappa")) # threshold
+    cfmat <- table(dat[[2]], factor(as.numeric(dat$pred >= cut$pred))) # confusion matrix
+    acc <- presence.absence.accuracy(dat, threshold = cut$pred, st.dev = F) # calc accuracies
+    tss <- acc$sensitivity + acc$specificity - 1 # code TSS metric
+    acc <- cbind(acc[1:7], tss) # bind all metrics
+    acc$model <- mod.num # variable substitution
+    if (i == 1) mods.acc <- acc else mods.acc <- rbind(mods.acc, acc) # build output dataframe
+    }
+  mods.acc[c(1, 4:5, 7:8)] # resubstittution accuracies by model
+```
+
+### measures of 10-fold cross-validation accuracy
+```{r}
+#   absent set.seed() answers will differ among runs
+#  library(DAAG) # load pkg for crossval
+  set.seed(1234) # set seed for replicability
+  mod.list <- c("mod0.GAM", "mod1.GAM", "mod2.GAM")
+  for (i in 1:length(mod.list)) {
+    cv.mod <- CVbinary(get(mod.list[i]), nfolds = 10, print.details = F) # crossval predict
+    cv.pred <- cv.mod$cvhat # assign new name to jackknife estimates
+    mod.num <- mod.list[i] # assign model No. to varname
+    cv.dat <- cbind(mod.num, global.df[2], cv.pred) # build obs and prediction dataframe
+    cv.cut <- optimal.thresholds(cv.dat, opt.methods = c("MaxKappa")) # threshold
+    cv.cfmat <- table(cv.dat[[2]], factor(as.numeric(cv.dat$cv.pred > cv.cut$cv.pred))) # confusion matrix
+cv.acc <- presence.absence.accuracy(cv.dat, threshold = cv.cut$cv.pred, st.dev = F) # calculate accuracies
+    cv.tss <- cv.acc$sensitivity + cv.acc$specificity - 1 # code TSS metric
+    cv.acc <- cbind(cv.acc[1:7], cv.tss) # bind all metrics
+    cv.acc$model <- mod.num # variable substitution
+    if (i == 1) mods.cvacc <- cv.acc else mods.cvacc <- rbind(mods.cvacc, cv.acc) # build output dataframe
+  }
+  
+  mods.cvacc[c(1, 4:5, 7:8)]  # accuracies by model
+```
+
+```{r}
+# help(optimal.thresholds) # options for optimizing threshold
+  mod.cut <- optimal.thresholds(cv.dat, opt.methods = c("MaxKappa")) # threshold=PREVALENCE
+  mod.cut # examine threshold=PREVALENCE
+```
+
+# Building Prediction Maps
+
+```{r}
+#   build testing dataframe using mod predictions
+selected_model <- mod2.GAM
+modl <- "mod2.GAM" # add var to keep track of model
+mod.pred <- "x"
+```
+
+```{r}
+setwd(path.out.specific)
+# !!!!  WARNING  !!!! NEED DIFFERENT PREDICT FOR EACH STAT MODEL TYPE
+#   use type="prob" to obtain probability values; index of 2 grabs prob of presence=1
+#  setwd(path.mod4)
+global.probGAM <- raster::predict(stack, selected_model, filename = paste0(spname, "_globalGAMprob.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.probGAM # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.clasGAM <- reclassify(global.probGAM, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.clasGAM
+```
+#### PROBABILITY & CLASSIFICATION PLOTS
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+continents <- st_read(dsn = ".", layer = "4a7d27e1-84a3-4d6a-b4c2-6b6919f3cf4b202034-1-2zg7ul.ht5ut") # import shapefile
+```
+
+```{r}
+par(mfrow = c(1, 2))
+  plot(global.probGAM, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.clasGAM, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+```
+
+
+### Modify spatial map to modelling domain
+```{r}
+setwd(path.in.specific)
+global.bufptR <- raster(paste0(spname, "_global.bboxR.img"))
+global.bufptR
+```
+
+```{r}
+global.bufptR.2 <- projectRaster(global.bufptR, global.probLR, crs = crs(global.probLR), res = res(global.probLR))
+```
+
+### Multiply through the modeling domain
+
+```{r}
+global.pdom <- global.bufptR.2 * global.probLR # multiply prob raster by domain raster
+global.cdom <- global.bufptR.2 * global.clasLR # multiply clas raster by domain raster
+# map.prob2 <- pers.bufptR.wgs * map.prob
+#map.prob2 <- mask(pied.probLR, pers.bufpt.wgs)
+#plot(map.prob2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(global.pdom, legend = F, axes = T, main = "Probability Map") # plot clipped probability map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.cdom, legend = F, axes = T, main = "Classification Map") # plot clipped classified map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5)  # add state boundaries
+```
+
+### Project to Hawaii
+
+```{r}
+projCoords <- data.frame(x = c(-160.5613, -160.5393, -154.0061, -154.072, -160.5613), y = c(23.1453, 17.9578, 18.0832, 23.0259, 23.1453))
+projPoly <- sp::SpatialPolygons(list(sp::Polygons(list(sp::Polygon(projCoords)), ID=1)))
+```
+
+### PROJECT MODEL TO NEW EXTENT -CURRENT
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(stack, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, mod1.LR, filename = paste0(spname, "_globalGAMproj.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasGAM <- reclassify(global.proj, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.proj.clasGAM
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasGAM, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+save(mod.acc, file = paste0(spname,"_global.mod.accuracy.GAM.Rdata"))
+
+writeRaster(global.pdom, filename = paste0(spname,"_globalproj.pdom.GAM.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, "_globalproj.cdom.GAM.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, "_globalproj.pdom.GAM.RData")) # save .RData
+save(global.pdom, file = paste0(spname, "_globalproj.cdom.GAM.RData")) # save .RData
+
+
+
+writeRaster(global.proj, filename = paste0(spname,  "_globalproj.prob.GAM.img"), overwrite = TRUE)
+writeRaster(global.proj.clasGAM, filename = paste0(spname, "_globalproj.clas.GAM.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname,  "_globalproj.prob.GAM.RData")) # save .RData
+save(global.proj.clasGAM, file = paste0(spname,  "_globalproj.clas.GAM.RData")) # save .RData
+
+```
+
+### PROJECT MODEL TO NEW EXTENT -END of CENTURY RCP 8.5
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(cmip_eightfive, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, selected_model, filename = paste0(spname, "_globalGAMproj.img"),
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasGAM <- reclassify(global.proj, c(0,mod.cut[[2]],0,
+                                           mod.cut[[2]],1,1))
+global.proj.clasGAM
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasGAM, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+
+writeRaster(global.pdom, filename = paste0(spname, futureclim, "_globalprojHI.pdom.GAM.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, futureclim,"_globalprojHI.cdom.GAM.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.pdom.GAM.RData")) # save .RData
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.cdom.GAM.RData")) # save .RData
+
+
+
+writeRaster(global.proj, filename = paste0(spname, futureclim,  "_globalproj.prob.GAM.img"), overwrite = TRUE)
+writeRaster(global.proj.clasGAM, filename = paste0(spname, futureclim, "_globalproj.clas.GAM.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname, futureclim,  "_globalproj.prob.GAM.RData")) # save .RData
+save(global.proj.clasGAM, file = paste0(spname, futureclim, "_globalproj.clas.GAM.RData")) # save .RData
+```
+
+
+# MAXENT
+
+```{r}
+head(global.df[11:length(global.df)])
+```
+
+### All Variables
+```{r}
+#library(dismo) # best library for maxent
+  mod1.MAX <- maxent( global.df[11:length(global.df)], global.df[2] ) # call for true pres:abs 
+```
+
+```{r}
+# NOTE:  typing "mod2.MAX" in R redirects output to browser
+  mod1.MAX
+```
+```{r}
+plot(mod1.MAX)
+```
+
+```{r}
+response(mod1.MAX)
+```
+
+### All Variables
+
+```{r}
+picked.df
+```
+
+```{r}
+#library(dismo) # best library for maxent
+mod2.MAX <- maxent( picked.df[5:length(picked.df)], picked.df[2] ) # call for true pres:abs 
+```
+
+```{r}
+# NOTE:  typing "mod2.MAX" in R redirects output to browser
+mod2.MAX
+```
+```{r}
+plot(mod2.MAX)
+```
+
+```{r}
+response(mod2.MAX)
+```
+
+### Calculate Accuracy Metrics
+```{r}
+mod1.pred <- predict(mod1.MAX, global.df[11:length(global.df)])
+```
+
+
+```{r}
+modl <- "mod2.MAX" # var placeholder
+  dat2 <- cbind(modl, global.df[2], mod2.pred) # build dataframe w/mod1 predictions
+  head(dat2, 10) # examine prediction dataframe
+```
+
+
+### evalauate Model
+##### p = presence pts, and a = pseudoabs
+
+```{r}
+mod1.val <- dismo::evaluate(mod1.MAX, p = global.df[global.df$Species == 1, c(3:4)], 
+    a = global.df[global.df$Species == 0, c(3:4)], x = stack) # x-fold cross-val
+```
+
+```{r}
+mod1.val
+```
+
+```{r}
+mod1.cut <- threshold(mod1.val)
+mod1.cut # view maxent thresholds
+```
+```{r}
+#mod1.cfmat <- table(dat2[[2]], factor(as.numeric(dat2$mod1.pred >= mod1.cut$spec_sens)))
+#mod1.cfmat
+```
+```{r}
+mod1.cut[[1]]
+```
+```{r}
+#library(PresenceAbsence) # PresenceAbsence for accuracy metrics
+  mod1.acc <- presence.absence.accuracy(dat2, threshold = mod1.cut[[1]], st.dev = F)
+  tss <- mod1.acc$sensitivity + mod1.acc$specificity - 1 # code TSS metric
+  mod1.acc <- cbind(mod1.acc[1:7], tss) # bind all metrics
+  mod1.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+  auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence
+```
+# Picked Var metrics
+### Calculate Accuracy Metrics
+
+```{r}
+mod2.pred <- predict(mod2.MAX, picked.df[5:length(picked.df)])
+```
+
+
+```{r}
+modl <- "mod2.MAX" # var placeholder
+  dat2 <- cbind(modl, picked.df[2], mod2.pred) # build dataframe w/mod1 predictions
+  head(dat2, 10) # examine prediction dataframe
+```
+
+
+
+### evalauate Model
+##### p = presence pts, and a = pseudoabs
+
+```{r}
+mod2.val <- dismo::evaluate(mod2.MAX, p = picked.df[picked.df$Species == 1, c(3:4)], 
+    a = picked.df[picked.df$Species == 0, c(3:4)], x = stack) # x-fold cross-val
+```
+
+```{r}
+mod2.val
+```
+
+```{r}
+mod2.cut <- threshold(mod2.val)
+mod2.cut # view maxent thresholds
+```
+```{r}
+mod2.cfmat <- table(dat2[[2]], factor(as.numeric(dat2$mod2.pred >= mod2.cut$spec_sens)))
+mod2.cfmat
+```
+```{r}
+mod2.cut[[1]]
+```
+```{r}
+#library(PresenceAbsence) # PresenceAbsence for accuracy metrics
+  mod2.acc <- presence.absence.accuracy(dat2, threshold = mod2.cut[[1]], st.dev = F)
+  tss <- mod2.acc$sensitivity + mod2.acc$specificity - 1 # code TSS metric
+  mod2.acc <- cbind(mod2.acc[1:7], tss) # bind all metrics
+  mod2.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+  auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence
+```
+
+### Building Prediction Maps
+
+```{r}
+#   build testing dataframe using mod predictions
+selected_model <- mod2.MAX
+modl <- "mod2.MAX" # add var to keep track of model
+mod.pred <- "x"
+mod.cut <- mod2.cut
+```
+
+
+```{r}
+setwd(path.out.specific)
+# !!!!  WARNING  !!!! NEED DIFFERENT PREDICT FOR EACH STAT MODEL TYPE
+#   use type="prob" to obtain probability values; index of 2 grabs prob of presence=1
+#  setwd(path.mod4)
+global.probMAX <- raster::predict(stack, selected_model, filename = paste0(spname, "_globalMAXprob.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.probMAX # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.clasMAX <- reclassify(global.probMAX, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.clasMAX
+```
+#### PROBABILITY & CLASSIFICATION PLOTS
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+continents <- st_read(dsn = ".", layer = "4a7d27e1-84a3-4d6a-b4c2-6b6919f3cf4b202034-1-2zg7ul.ht5ut") # import shapefile
+```
+
+```{r}
+par(mfrow = c(1, 2))
+  plot(global.probMAX, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.clasMAX, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+```
+
+
+### Modify spatial map to modelling domain
+```{r}
+setwd(path.in.specific)
+global.bufptR <- raster(paste0(spname, "_global.bboxR.img"))
+global.bufptR
+```
+
+```{r}
+global.bufptR.2 <- projectRaster(global.bufptR, global.probMAX, crs = crs(global.probMAX), res = res(global.probMAX))
+```
+
+### Multiply through the modeling domain
+
+```{r}
+global.pdom <- global.bufptR.2 * global.probMAX # multiply prob raster by domain raster
+global.cdom <- global.bufptR.2 * global.clasMAX # multiply clas raster by domain raster
+# map.prob2 <- pers.bufptR.wgs * map.prob
+#map.prob2 <- mask(pied.probLR, pers.bufpt.wgs)
+#plot(map.prob2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(global.pdom, legend = F, axes = T, main = "Probability Map") # plot clipped probability map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.cdom, legend = F, axes = T, main = "Classification Map") # plot clipped classified map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5)  # add state boundaries
+```
+
+### Project to Hawaii
+
+```{r}
+projCoords <- data.frame(x = c(-160.5613, -160.5393, -154.0061, -154.072, -160.5613), y = c(23.1453, 17.9578, 18.0832, 23.0259, 23.1453))
+projPoly <- sp::SpatialPolygons(list(sp::Polygons(list(sp::Polygon(projCoords)), ID=1)))
+```
+
+### PROJECT MODEL TO NEW EXTENT -CURRENT
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(stack, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, mod2.MAX, filename = paste0(spname, "_globalMAXproj.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasMAX <- reclassify(global.proj, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.proj.clasMAX
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasMAX, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+save(mod.acc, file = paste0(spname,"_global.mod.accuracy.MAX.Rdata"))
+
+writeRaster(global.pdom, filename = paste0(spname,"_globalproj.pdom.MAX.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, "_globalproj.cdom.MAX.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, "_globalproj.pdom.MAX.RData")) # save .RData
+save(global.pdom, file = paste0(spname, "_globalproj.cdom.MAX.RData")) # save .RData
+
+
+
+writeRaster(global.proj, filename = paste0(spname,  "_globalproj.prob.MAX.img"), overwrite = TRUE)
+writeRaster(global.proj.clasMAX, filename = paste0(spname, "_globalproj.clas.MAX.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname,  "_globalproj.prob.MAX.RData")) # save .RData
+save(global.proj.clasMAX, file = paste0(spname,  "_globalproj.clas.MAX.RData")) # save .RData
+
+```
+
+### PROJECT MODEL TO NEW EXTENT -END of CENTURY RCP 8.5
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(cmip_eightfive, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, selected_model, filename = paste0(spname, "_globalMAXproj.img"),
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasMAX <- reclassify(global.proj, c(0,mod.cut[[2]],0,
+                                           mod.cut[[2]],1,1))
+global.proj.clasMAX
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasMAX, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+
+writeRaster(global.pdom, filename = paste0(spname, futureclim, "_globalprojHI.pdom.MAX.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, futureclim,"_globalprojHI.cdom.MAX.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.pdom.MAX.RData")) # save .RData
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.cdom.MAX.RData")) # save .RData
+
+
+
+writeRaster(global.proj, filename = paste0(spname, futureclim, "_globalproj.prob.MAX.img"), overwrite = TRUE)
+writeRaster(global.proj.clasMAX, filename = paste0(spname, futureclim,"_globalproj.clas.MAX.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname, futureclim,  "_globalproj.prob.MAX.RData")) # save .RData
+save(global.proj.clasMAX, file = paste0(spname, futureclim,  "_globalproj.clas.MAX.RData")) # save .RData
+
+```
+
+
+# RANDOM FOREST MODEL
+
+## All vars
+
+```{r}
+# build model formula as alternative hard code
+  mod.form <- function(dat ,r.col, p.col) {
+  # generic formula construction function; inputs as:
+  #  resp =>col 1 in dataframe such that r.col=1, 
+  #  preds=>col 2 thru ncol in dataframe such that p.col=2
+  #  NOTE: predictor vars as factors; coerce PRIOR to formula construction
+  # example call: mod.form(dat1,1,2)
+   n.col <- ncol(dat) # No. columns in dataframe
+   resp <- colnames(dat[r.col]) # assign resp column name
+   resp <- paste("as.factor(", colnames(dat[r.col]), ")", sep = "") # assign resp column name
+   pred <- colnames(dat[c(p.col:n.col)]) # assign preds column names
+   mod.formula <- as.formula(paste(resp, "~", paste(pred, collapse = "+"))) # build formula 
+  }
+```
+
+
+```{r}
+#library(randomForest) # load RF package
+  mod1.RF <- randomForest(mod.form(global.df, 2, 11), importance = T, 
+    keep.forest = T, data = global.df) # RF model w/mod.form fxn
+
+mod1.pred <- predict(mod1.RF, type = "prob")[, 2] # predict from model
+  head(mod1.pred) # examine
+```
+
+
+```{r}
+varImpPlot(mod1.RF, main = "Variable Importance Plots")
+```
+
+
+# Resub accuracy calculations
+
+```{r}
+modl <- "mod1.RF" # add var to keep track of model
+  dat2 <- cbind(modl, global.df[2], mod1.pred) # build dataframe w/mod1 predictions
+  head(dat2, 2) # examine prediction dataframe
+```
+
+#### determine best threshold using PresenceAbsence package
+```{r}
+#   see help(optimal.thresholds) for more info
+  #library(PresenceAbsence) # PresenceAbsence for accuracy metrics
+  #help(optimal.thresholds) # options for optimizing threshold
+  mod.cut = optimal.thresholds(dat2, opt.methods=c('MaxKappa'))
+  mod.cut # sensitivity set at 0.95
+```
+
+```{r}
+  mod1.cfmat <- table(dat2[[2]], factor(as.numeric(dat2$mod1.pred >= mod.cut$mod1.pred)))
+  mod1.cfmat # examine
+```
+
+```{r}
+# calculate model accuracies with standard deviation=F
+  mod1.acc <- presence.absence.accuracy(dat2, threshold = mod.cut$mod1.pred, st.dev = F)
+  tss <- mod1.acc$sensitivity + mod1.acc$specificity - 1 # code TSS metric
+  mod1.acc <- cbind(mod1.acc[1:7], tss) # bind all metrics
+  mod1.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence 
+```
+### Out of Bag Estimate
+
+```{r}
+mod1.RF # RF mod 1 model summary
+```
+```{r}
+mod1.RF$confusion # OOB confusion
+```
+
+#### X-fold analog
+```{r}
+oob.acc <- presence.absence.accuracy(dat2, st.dev = F) # oob accuracies
+  tss <- oob.acc$sensitivity + oob.acc$specificity - 1 # code TSS metric
+  oob.acc <- cbind(oob.acc[1:7], tss) # bind all metrics
+  oob.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+mod1.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+### WIth picked vars
+
+```{r}
+#library(randomForest) # load RF package
+mod2.RF <- randomForest(mod.form(picked.df, 2, 5), importance = T, 
+    keep.forest = T, data = picked.df) # RF model w/mod.form fxn
+
+mod2.pred <- predict(mod2.RF, type = "prob")[, 2] # predict from model
+  head(mod1.pred) # examine
+```
+
+
+```{r}
+varImpPlot(mod2.RF, main = "Variable Importance Plots")
+```
+
+
+# Resub accuracy calculations
+
+```{r}
+modl <- "mod2.RF" # add var to keep track of model
+  dat2 <- cbind(modl, picked.df[2], mod2.pred) # build dataframe w/mod1 predictions
+  head(dat2, 2) # examine prediction dataframe
+```
+
+#### determine best threshold using PresenceAbsence package
+```{r}
+#   see help(optimal.thresholds) for more info
+  #library(PresenceAbsence) # PresenceAbsence for accuracy metrics
+  #help(optimal.thresholds) # options for optimizing threshold
+  mod.cut = optimal.thresholds(dat2, opt.methods=c('MaxKappa'))
+  mod.cut # sensitivity set at 0.95
+```
+
+```{r}
+  mod2.cfmat <- table(dat2[[2]], factor(as.numeric(dat2$mod2.pred >= mod.cut$mod2.pred)))
+  mod2.cfmat # examine
+```
+
+```{r}
+# calculate model accuracies with standard deviation=F
+  mod2.acc <- presence.absence.accuracy(dat2, threshold = mod.cut$mod2.pred, st.dev = F)
+  tss <- mod2.acc$sensitivity + mod2.acc$specificity - 1 # code TSS metric
+  mod2.acc <- cbind(mod1.acc[1:7], tss) # bind all metrics
+  mod2.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence 
+```
+### Out of Bag Estimate
+
+```{r}
+mod2.RF # RF mod 1 model summary
+```
+```{r}
+mod2.RF$confusion # OOB confusion
+```
+
+#### X-fold analog
+```{r}
+oob.acc <- presence.absence.accuracy(dat2, st.dev = F) # oob accuracies
+  tss <- oob.acc$sensitivity + oob.acc$specificity - 1 # code TSS metric
+  oob.acc <- cbind(oob.acc[1:7], tss) # bind all metrics
+  oob.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+mod2.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+
+### Building Prediction Maps
+
+```{r}
+#   build testing dataframe using mod predictions
+selected_model <- mod1.RF
+modl <- "mod1.RF" # add var to keep track of model
+mod.pred <- "x"
+mod.cut <- mod.cut
+```
+
+
+```{r}
+setwd(path.out.specific)
+# !!!!  WARNING  !!!! NEED DIFFERENT PREDICT FOR EACH STAT MODEL TYPE
+#   use type="prob" to obtain probability values; index of 2 grabs prob of presence=1
+#  setwd(path.mod4)
+global.probRF <- raster::predict(stack, selected_model, filename = paste0(spname, "_globalRFprob.img"), 
+    type = "prob", fun = predict, index = 2, overwrite = T) # prediction raster
+global.probRF # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.clasRF <- reclassify(global.probRF, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.clasRF
+```
+#### PROBABILITY & CLASSIFICATION PLOTS
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+continents <- st_read(dsn = ".", layer = "4a7d27e1-84a3-4d6a-b4c2-6b6919f3cf4b202034-1-2zg7ul.ht5ut") # import shapefile
+```
+
+```{r}
+par(mfrow = c(1, 2))
+  plot(global.probRF, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.clasRF, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+```
+
+
+### Modify spatial map to modelling domain
+```{r}
+setwd(path.in.specific)
+global.bufptR <- raster(paste0(spname, "_global.bboxR.img"))
+global.bufptR
+```
+
+```{r}
+global.bufptR.2 <- projectRaster(global.bufptR, global.probRF, crs = crs(global.probRF), res = res(global.probRF))
+```
+
+### Multiply through the modeling domain
+
+```{r}
+global.pdom <- global.bufptR.2 * global.probRF # multiply prob raster by domain raster
+global.cdom <- global.bufptR.2 * global.clasRF # multiply clas raster by domain raster
+# map.prob2 <- pers.bufptR.wgs * map.prob
+#map.prob2 <- mask(pied.probLR, pers.bufpt.wgs)
+#plot(map.prob2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(global.pdom, legend = F, axes = T, main = "Probability Map") # plot clipped probability map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.cdom, legend = F, axes = T, main = "Classification Map") # plot clipped classified map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5)  # add state boundaries
+```
+
+### Project to Hawaii
+
+```{r}
+projCoords <- data.frame(x = c(-160.5613, -160.5393, -154.0061, -154.072, -160.5613), y = c(23.1453, 17.9578, 18.0832, 23.0259, 23.1453))
+projPoly <- sp::SpatialPolygons(list(sp::Polygons(list(sp::Polygon(projCoords)), ID=1)))
+```
+
+### PROJECT MODEL TO NEW EXTENT -CURRENT
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(stack, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, mod2.RF, filename = paste0(spname, "_globalRFproj.img"), 
+    type = "prob", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasRF <- reclassify(global.proj, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.proj.clasRF
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasRF, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+#save(mod.acc, file = paste0(spname,"_global.mod.accuracy.RF.Rdata"))
+
+writeRaster(global.pdom, filename = paste0(spname,"_globalproj.pdom.RF.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, "_globalproj.cdom.RF.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, "_globalproj.pdom.RF.RData")) # save .RData
+save(global.pdom, file = paste0(spname, "_globalproj.cdom.RF.RData")) # save .RData
+
+
+writeRaster(global.proj, filename = paste0(spname,  "_globalproj.prob.RF.img"), overwrite = TRUE)
+writeRaster(global.proj.clasRF, filename = paste0(spname, "_globalproj.clas.RF.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname,  "_globalproj.prob.RF.RData")) # save .RData
+save(global.proj.clasRF, file = paste0(spname, "_globalproj.clas.RF.RData")) # save .RDat
+
+```
+
+### PROJECT MODEL TO NEW EXTENT -END of CENTURY RCP 8.5
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(cmip_eightfive, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, selected_model, filename = paste0(spname, "_globalRFproj.img"),
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasRF <- reclassify(global.proj, c(0,mod.cut[[2]],0,
+                                           mod.cut[[2]],1,1))
+global.proj.clasRF
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasRF, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+
+writeRaster(global.pdom, filename = paste0(spname, futureclim, "_globalprojHI.pdom.RF.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, futureclim,"_globalprojHI.cdom.RF.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.pdom.RF.RData")) # save .RData
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.cdom.RF.RData")) # save .RData
+
+
+writeRaster(global.proj, filename = paste0(spname,futureclim,  "_globalproj.prob.RF.img"), overwrite = TRUE)
+writeRaster(global.proj.clasRF, filename = paste0(spname,futureclim, "_globalproj.clas.RF.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname, futureclim, "_globalproj.prob.RF.RData")) # save .RData
+save(global.proj.clasRF, file = paste0(spname,futureclim, "_globalproj.clas.RF.RData")) # save .RDat
+```
+
+# Boosted Regression Trees
+
+```{r}
+#! WARNING !! resp for datasets in col=4
+ # global.df2 <- na.omit(global.df) # remove NAs - BRT not picky but drop 'em anyway
+  resp <- paste("as.factor(", colnames(global.df[2]), ")", sep = "") # assign resp to col number
+  n.col <- ncol(global.df) # number of columns
+  pred <- 11:n.col # assign predictors to column numbers (begins at 4 here)
+```
+
+
+```{r}
+  mod1.BRT <- gbm.step(data = global.df, gbm.x = pred, gbm.y = 2, family = "bernoulli",
+    tree.complexity = 3, learning.rate = 0.0001, bag.fraction = 0.75, n.folds = 10, 
+    n.trees = 1500, plot.main = TRUE, keep.fold.fit = TRUE) #<- creates the basic model
+
+```
+
+```{r}
+head(mod1.BRT$fitted) # model fit values
+```
+
+```{r}
+mod1.BRT$contributions # relative variable importance
+```
+```{r}
+par(mfrow = c(3, 4))
+  gbm.plot(mod1.BRT) # response:predictor plots 
+```
+
+```{r}
+mod1.int <- gbm.interactions(mod1.BRT)
+```
+
+```{r}
+  mod1.int$rank.list # matrix of 5 top interactions 
+```
+
+```{r}
+modl <- "mod1.BRT" # add var to keep track of model
+  dat2 <- cbind(modl, global.df[2], mod1.BRT$fitted, mod1.BRT$fold.fit) # build dataframe
+  names(dat2)[3:4] <- c("pred", "cvpred") # rename vars
+  head(dat2, 2) # just to see logit scale
+```
+
+```{r}
+dat2$cvpred <- exp(dat2$cvpred)/(1 + exp(dat2$cvpred)) # convert from logit
+  head(dat2, 2) # examine prediction dataframe
+```
+
+```{r}
+#   see help(optimal.thresholds) for more info
+  #library(PresenceAbsence)  # PresenceAbsence for accuracy metrics
+  mod1.cut <- optimal.thresholds(dat2, opt.methods = c("MaxKappa")) # threshold=MaxKappa
+  mod1.cut # examine
+```
+
+```{r}
+  mod1.cfmatR <- table(dat2[[2]], factor(as.numeric(dat2$pred >= mod1.cut$pred)))
+  mod1.cfmatX <- table(dat2[[2]], factor(as.numeric(dat2$cvpred >= mod1.cut$cvpred)))
+  mod1.cfmatR # examine
+```
+```{r}
+mod1.cfmatX
+```
+```{r}
+  mod1.acc <- presence.absence.accuracy(dat2, threshold = mod1.cut$pred, st.dev = F)
+  tss <- mod1.acc$sensitivity + mod1.acc$specificity - 1 # code TSS metric
+  mod1.acc <- cbind(mod1.acc[1:7], tss) # bind all metrics
+
+mod1.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+  auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence 
+```
+
+### picked vars
+
+# Boosted Regression Trees
+
+```{r}
+#! WARNING !! resp for datasets in col=4
+ # global.df2 <- na.omit(global.df) # remove NAs - BRT not picky but drop 'em anyway
+  resp <- paste("as.factor(", colnames(picked.df[2]), ")", sep = "") # assign resp to col number
+  n.col <- ncol(picked.df) # number of columns
+  pred <- 5:n.col # assign predictors to column numbers (begins at 4 here)
+```
+
+```{r}
+  mod2.BRT <- gbm.step(data = picked.df, gbm.x = pred, gbm.y = 2, family = "bernoulli",
+    tree.complexity = 3, learning.rate = 0.0001, bag.fraction = 0.75, n.folds = 10, 
+    n.trees = 1500, plot.main = TRUE, keep.fold.fit = TRUE) #<- creates the basic model
+```
+
+```{r}
+head(mod2.BRT$fitted) # model fit values
+```
+
+```{r}
+mod2.BRT$contributions # relative variable importance
+```
+```{r}
+par(mfrow = c(3, 4))
+  gbm.plot(mod2.BRT) # response:predictor plots 
+```
+
+```{r}
+mod2.int <- gbm.interactions(mod2.BRT)
+```
+
+```{r}
+  mod2.int$rank.list # matrix of 5 top interactions 
+```
+
+```{r}
+modl <- "mod2.BRT" # add var to keep track of model
+  dat2 <- cbind(modl, picked.df[2], mod1.BRT$fitted, mod1.BRT$fold.fit) # build dataframe
+  names(dat2)[3:4] <- c("pred", "cvpred") # rename vars
+  head(dat2, 2) # just to see logit scale
+```
+
+```{r}
+dat2$cvpred <- exp(dat2$cvpred)/(1 + exp(dat2$cvpred)) # convert from logit
+  head(dat2, 2) # examine prediction dataframe
+```
+
+```{r}
+#   see help(optimal.thresholds) for more info
+  #library(PresenceAbsence)  # PresenceAbsence for accuracy metrics
+  mod2.cut <- optimal.thresholds(dat2, opt.methods = c("MaxKappa")) # threshold=MaxKappa
+  mod2.cut # examine
+```
+
+```{r}
+  mod2.cfmatR <- table(dat2[[2]], factor(as.numeric(dat2$pred >= mod2.cut$pred)))
+  mod2.cfmatX <- table(dat2[[2]], factor(as.numeric(dat2$cvpred >= mod2.cut$cvpred)))
+  mod2.cfmatR # examine
+```
+```{r}
+mod2.cfmatX
+```
+```{r}
+  mod2.acc <- presence.absence.accuracy(dat2, threshold = mod2.cut$pred, st.dev = F)
+  tss <- mod2.acc$sensitivity + mod2.acc$specificity - 1 # code TSS metric
+  mod2.acc <- cbind(mod1.acc[1:7], tss) # bind all metrics
+
+mod2.acc[c(1, 4:5, 7:8)] # examine accuracies
+```
+
+```{r}
+# plotting AUC
+  auc.roc.plot(dat2, color = T) # basic AUC plot; pkg PresenceAbsence 
+```
+
+
+### Building Prediction Maps
+
+```{r}
+#   build testing dataframe using mod predictions
+selected_model <- mod2.BRT
+modl <- "mod2.BRT" # add var to keep track of model
+mod.pred <- "x"
+#mod.cut <- mod2.cut
+```
+
+
+```{r}
+setwd(path.out.specific)
+# !!!!  WARNING  !!!! NEED DIFFERENT PREDICT FOR EACH STAT MODEL TYPE
+#   use type="prob" to obtain probability values; index of 2 grabs prob of presence=1
+#  setwd(path.mod4)
+
+global.probBRT  =raster::predict(stack, selected_model,  n.trees = mod2.BRT$gbm.call$best.trees, type = "response", filename = paste0(spname, "_globalBRTprob.img"),  overwrite = T)
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.clasBRT <- reclassify(global.probBRT, c(0,mod.cut[[2]],0,  
+                                           mod.cut[[2]],1,1))
+global.clasBRT
+```
+
+#### PROBABILITY & CLASSIFICATION PLOTS
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+continents <- st_read(dsn = ".", layer = "4a7d27e1-84a3-4d6a-b4c2-6b6919f3cf4b202034-1-2zg7ul.ht5ut") # import shapefile
+```
+
+```{r}
+par(mfrow = c(1, 2))
+  plot(global.probBRT, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.clasBRT, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+```
+
+
+### Modify spatial map to modelling domain
+```{r}
+setwd(path.in.specific)
+global.bufptR <- raster(paste0(spname, "_global.bboxR.img"))
+global.bufptR
+```
+
+```{r}
+global.bufptR.2 <- projectRaster(global.bufptR, global.probBRT, crs = crs(global.probBRT), res = res(global.probBRT))
+```
+
+### Multiply through the modeling domain
+
+```{r}
+global.pdom <- global.bufptR.2 * global.probBRT # multiply prob raster by domain raster
+global.cdom <- global.bufptR.2 * global.clasBRT # multiply clas raster by domain raster
+# map.prob2 <- pers.bufptR.wgs * map.prob
+#map.prob2 <- mask(pied.probLR, pers.bufpt.wgs)
+#plot(map.prob2)
+```
+
+```{r}
+par(mfrow = c(1, 2))
+plot(global.pdom, legend = F, axes = T, main = "Probability Map") # plot clipped probability map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5) # add state boundaries
+
+plot(global.cdom, legend = F, axes = T, main = "Classification Map") # plot clipped classified map
+plot(sf::st_geometry(continents), add = T, lwd = 1.5)  # add state boundaries
+```
+
+### Project to Hawaii
+
+```{r}
+projCoords <- data.frame(x = c(-160.5613, -160.5393, -154.0061, -154.072, -160.5613), y = c(23.1453, 17.9578, 18.0832, 23.0259, 23.1453))
+projPoly <- sp::SpatialPolygons(list(sp::Polygons(list(sp::Polygon(projCoords)), ID=1)))
+```
+
+### PROJECT MODEL TO NEW EXTENT -CURRENT
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(stack, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, selected_model, filename = paste0(spname, "_globalBRTproj.img"), 
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasBRT <- reclassify(global.proj, c(0,mod.cut[[2]],0, 
+                                           mod.cut[[2]],1,1))
+global.proj.clasBRT
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasBRT, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+#save(mod.acc, file = paste0(spname,"_global.mod.accuracy.BRT.Rdata"))
+
+writeRaster(global.pdom, filename = paste0(spname,"_globalproj.pdom.BRT.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, "_globalproj.cdom.BRT.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, "_globalproj.pdom.BRT.RData")) # save .RData
+save(global.pdom, file = paste0(spname, "_globalproj.cdom.BRT.RData")) # save .RData
+
+writeRaster(global.proj, filename = paste0(spname, "_globalproj.prob.BRT.img"), overwrite = TRUE)
+writeRaster(global.proj.clasBRT, filename = paste0(spname, "_globalproj.clas.BRT.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname,  "_globalproj.prob.BRT.RData")) # save .RData
+save(global.proj.clasBRT, file = paste0(spname, "_globalproj.clas.BRT.RData")) # save .RData
+
+
+```
+
+### PROJECT MODEL TO NEW EXTENT -END of CENTURY RCP 8.5
+
+Now use crop and mask the predictor variables by projPoly, and predict the values for the new extent based
+on the model selected.
+
+```{r}
+predsProj <- raster::crop(cmip_eightfive, projPoly)
+predsProj <- raster::mask(predsProj, projPoly)
+predsProj
+```
+
+```{r}
+global.proj <- raster::predict(predsProj, selected_model, filename = paste0(spname, "_globalBRTproj.img"),
+    type = "response", fun = predict, index = 2, overwrite = T) # prediction raster
+global.proj # examine
+
+```
+
+```{r}
+# next reclassify based on threshold mod.cut per above
+global.proj.clasBRT <- reclassify(global.proj, c(0,mod.cut[[2]],0,
+                                           mod.cut[[2]],1,1))
+global.proj.clasBRT
+```
+#### Probability and Classification Plots
+
+```{r}
+# boundaries for pretty maps
+setwd(path.in.general)
+islandpolys <- st_read(dsn = ".", layer = "Coastline") # import shapefile
+```
+
+```{r}
+#par(mfrow = c(1, 2))
+  plot(global.proj, legend = F, axes = T, main = "Probability Map") # plot probability map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add isalnd boundaries
+```
+
+```{r}
+plot(global.proj.clasBRT, legend = F, axes = T, main = "Classification Map") # plot classification map
+  plot(st_geometry(islandpolys), add = T, lwd = 1.5) # add island boundaries
+```
+
+Saving for compiled model
+```{r}
+setwd(path.out.specific)
+
+writeRaster(global.pdom, filename = paste0(spname, futureclim, "_globalprojHI.pdom.BRT.img"), overwrite = TRUE)
+writeRaster(global.cdom, filename = paste0(spname, futureclim,"_globalprojHI.cdom.BRT.img"), overwrite = TRUE)
+
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.pdom.BRT.RData")) # save .RData
+save(global.pdom, file = paste0(spname, futureclim, "_globalprojHI.cdom.BRT.RData")) # save .RData
+
+
+writeRaster(global.proj, filename = paste0(spname, futureclim, "_globalproj.prob.BRT.img"), overwrite = TRUE)
+writeRaster(global.proj.clasBRT, filename = paste0(spname, futureclim,"_globalproj.clas.BRT.img"), overwrite = TRUE)
+
+save(global.proj, file = paste0(spname, futureclim, "_globalproj.prob.BRT.RData")) # save .RData
+save(global.proj.clasBRT, file = paste0(spname, futureclim, "_globalproj.clas.BRT.RData")) # save .RData
+```
+
+### Ensemble of Models
+
+## Historic CLimate
+
+```{r}
+setwd(path.out.specific)
+  pr.list <- unlist(unique(strsplit(list.files(pattern = "Species.name_globalproj.prob."), ".aux.xml")))
+ pr.list <- pr.list[c(TRUE, FALSE)] # Weird workaround to remove .Rdata versions in list
+  pr.list # examine
+```
+
+```{r}
+setwd(path.out.specific)
+prob.dom <- raster::stack(pr.list) # raster stack prob maps
+  prob.dom # examine
+```
+
+```{r}
+setwd(path.out.specific)
+  cl.list <- unlist(unique(strsplit(list.files(pattern = "Species.name_globalproj.clas."), ".aux.xml")))
+  cl.list <- cl.list[c(TRUE, FALSE)] # Weird workaround to remove .Rdata versions in list
+  cl.list # examine
+```
+```{r}
+setwd(path.out.specific)
+clas.dom <- stack(cl.list) # raster stack classified maps
+  clas.dom # examine
+```
+### standardize all prediction maps 0-1.0
+##### calibrate so that max value = 1
+
+Here's the max vals now
+```{r}
+ maxValue(prob.dom)
+```
+and now...
+```{r}
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(prob.dom))) {
+    m1 <- prob.dom[[i]] # get a prob map
+    m2 <- 1/maxValue(prob.dom[[i]]) * prob.dom[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(prob.dom[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], "STD.", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], "STD.", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], "STD.", m3[2], sep = "")))
+  }
+  probSTD.dom <- stack(layers)
+  maxValue(probSTD.dom) # extract max value for each prob map; standardized ?
+```
+
+### descriptive stats on raster maps: mean & sum
+```{r}
+prob.mean <- mean(prob.dom) # mean prob map
+prob.mean
+```
+```{r}
+  maxValue(prob.mean) # max pr.mean
+```
+```{r}
+  minValue(prob.mean) # min pr.mean
+```
+```{r}
+probSTD.mean <- mean(probSTD.dom) # mean standardized prob map
+clas.sum <- sum(clas.dom) # sum of models by cell
+```
+```{r}
+# giggle plots: mean & sum
+ # par(mfrow = c(1, 2))
+  plot(probSTD.mean, axes = T, main = "MEAN probability map") # plot probability map
+  plot(st_geometry(islandpolys), add = T)
+```
+
+
+```{r}
+plot(clas.sum, axes = T, main = "Concordance CLASS map: Ramp") # plot concordance map
+  plot(st_geometry(islandpolys), add = T)
+```
+# calculate measures of variation
+
+Helps understand where models agree (useful for decision-making)
+
+```{r}
+prob.sd <- calc(prob.dom, sd) # sd prob map
+  prob.var <- calc(prob.dom, var) # var prob map
+  prob.cv <- (prob.sd/prob.mean)*100 # coefficient of variation
+
+# giggle plots: sd and var
+  par(mfrow = c(1, 3))
+  plot(prob.sd, axes = T, main = "SD probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+  plot(prob.var, axes = T, main = "VAR probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+   plot(prob.cv, axes = T, main = "CV probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+```
+### some sumAUGy statistics: frequencies
+
+```{r}
+clas.freqM <- freq(clas.dom) # [0,1] freqs by clas map; rtns list
+  clas.freqM[c(1,1:5)] # examine freqs for 1st 2 models
+```
+
+```{r}
+  clas.freqS <- data.frame(freq(clas.sum)) # freqs of concordance of models
+  clas.freqS # examine; value is concordance freq
+```
+```{r}
+  clas.freqS$count[6]/sum(clas.freqS$count[2:6]) # prop. models concordance=5
+```
+## SAVE EMSEMBLE
+
+```{r}
+setwd(path.out.specific)
+save(prob.dom, file = paste0(spname, "_prob.dom.stack.ens.RData")) # save .RData
+writeRaster(prob.dom, paste0(spname,"_prob.dom.stack.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(probSTD.mean, file = paste0(spname,"_probSTD.mean.ens.RData")) # save .RData
+writeRaster(probSTD.mean, paste0(spname,"_probSTD.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(clas.sum, file = paste0(spname,"_clas.sum.ens.RData")) # save .RData
+writeRaster(probSTD.mean, paste0(spname,"_clas.sum.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(prob.mean, file = paste0(spname,"_union.prob.mean.ens.RData")) # save .RData
+writeRaster(prob.mean, paste0(spname,"_union.prob.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(clas.sum, file = paste0(spname,"_union.clas.mean.ens.RData")) # save .RData
+writeRaster(clas.sum, paste0(spname,"_union.clas.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(prob.sd, file = paste0(spname,"_prob.sd.ens.RData")) # save .RData
+writeRaster(prob.sd, paste0(spname,"_prob.sd.ens.img"), format = "HFA", overwrite = TRUE)
+
+```
+
+
+## FUTURE CLimate
+
+```{r}
+setwd(path.out.specific)
+  pr.list <- unlist(unique(strsplit(list.files(pattern = "RCP8.5_globalproj.prob."), ".aux.xml")))
+ pr.list <- pr.list[c(TRUE, FALSE)] # Weird workaround to remove .Rdata versions in list
+  pr.list # examine
+```
+
+```{r}
+setwd(path.out.specific)
+prob.dom <- raster::stack(pr.list) # raster stack prob maps
+ prob.dom # examine
+```
+
+```{r}
+setwd(path.out.specific)
+  cl.list <- unlist(unique(strsplit(list.files(pattern = "RCP8.5_globalproj.clas."), ".aux.xml")))
+  cl.list <- cl.list[c(TRUE, FALSE)] # Weird workaround to remove .Rdata versions in list
+  cl.list # examine
+```
+```{r}
+setwd(path.out.specific)
+clas.dom <- stack(cl.list) # raster stack classified maps
+  clas.dom # examine
+```
+### standardize all prediction maps 0-1.0
+##### calibrate so that max value = 1
+
+Here's the max vals now
+```{r}
+ maxValue(prob.dom)
+```
+and now...
+```{r}
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(prob.dom))) {
+    m1 <- prob.dom[[i]] # get a prob map
+    m2 <- 1/maxValue(prob.dom[[i]]) * prob.dom[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(prob.dom[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], "STD.", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], "STD.", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], "STD.", m3[2], sep = "")))
+  }
+  probSTD.dom <- stack(layers)
+  maxValue(probSTD.dom) # extract max value for each prob map; standardized ?
+```
+
+### descriptive stats on raster maps: mean & sum
+```{r}
+prob.mean <- mean(prob.dom) # mean prob map
+prob.mean
+```
+```{r}
+  maxValue(prob.mean) # max pr.mean
+```
+```{r}
+  minValue(prob.mean) # min pr.mean
+```
+```{r}
+probSTD.mean <- mean(probSTD.dom) # mean standardized prob map
+clas.sum <- sum(clas.dom) # sum of models by cell
+```
+```{r}
+# giggle plots: mean & sum
+ # par(mfrow = c(1, 2))
+  plot(probSTD.mean, axes = T, main = "MEAN probability map") # plot probability map
+  plot(st_geometry(islandpolys), add = T)
+```
+
+
+```{r}
+plot(clas.sum, axes = T, main = "Concordance CLASS map: Ramp") # plot concordance map
+  plot(st_geometry(islandpolys), add = T)
+```
+# calculate measures of variation
+
+Helps understand where models agree (useful for decision-making)
+
+```{r}
+prob.sd <- calc(prob.dom, sd) # sd prob map
+  prob.var <- calc(prob.dom, var) # var prob map
+  prob.cv <- (prob.sd/prob.mean)*100 # coefficient of variation
+
+# giggle plots: sd and var
+  par(mfrow = c(1, 3))
+  plot(prob.sd, axes = T, main = "SD probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+  plot(prob.var, axes = T, main = "VAR probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+   plot(prob.cv, axes = T, main = "CV probability map") # plot classified map
+  plot(st_geometry(islandpolys), add = T)
+
+```
+### some sumAUGy statistics: frequencies
+
+```{r}
+clas.freqM <- freq(clas.dom) # [0,1] freqs by clas map; rtns list
+  clas.freqM[c(1,1:5)] # examine freqs for 1st 2 models
+```
+
+```{r}
+  clas.freqS <- data.frame(freq(clas.sum)) # freqs of concordance of models
+  clas.freqS # examine; value is concordance freq
+```
+```{r}
+  clas.freqS$count[6]/sum(clas.freqS$count[2:6]) # prop. models concordance=5
+```
+## SAVE EMSEMBLE
+
+```{r}
+setwd(path.out.specific)
+save(prob.dom, file = paste0(spname, futureclim, "_prob.dom.stack.ens.RData")) # save .RData
+writeRaster(prob.dom, paste0(spname,futureclim,"_prob.dom.stack.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(probSTD.mean, file = paste0(spname, futureclim,"_probSTD.mean.ens.RData")) # save .RData
+writeRaster(probSTD.mean, paste0(spname,futureclim,"_probSTD.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(clas.sum, file = paste0(spname,futureclim,"_clas.sum.ens.RData")) # save .RData
+writeRaster(probSTD.mean, paste0(spname,futureclim,"_clas.sum.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(prob.mean, file = paste0(spname,futureclim,"_union.prob.mean.ens.RData")) # save .RData
+writeRaster(prob.mean, paste0(spname,futureclim,"_union.prob.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(clas.sum, file = paste0(spname,futureclim,"_union.clas.mean.ens.RData")) # save .RData
+writeRaster(clas.sum, paste0(spname,futureclim,"_union.clas.mean.ens.img"), format = "HFA", overwrite = TRUE)
+
+save(prob.sd, file = paste0(spname,futureclim,"_prob.sd.ens.RData")) # save .RData
+writeRaster(prob.sd, paste0(spname,futureclim,"_prob.sd.ens.img"), format = "HFA", overwrite = TRUE)
+
+```
+
+```{r}
+library(beepr)
+beep(sound = 2)
+beep(sound = 2)
+beep(sound = 8)
+beep(sound = 4)
+```
+

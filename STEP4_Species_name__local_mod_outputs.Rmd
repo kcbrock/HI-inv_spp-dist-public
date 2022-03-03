@@ -1,0 +1,522 @@
+---
+title: "- local Model Outputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+# Name of Species being modelled
+```{r}
+# provide species name in format "Genus_species"
+spname <- ""
+```
+```{r}
+# provide relative concentration pathway for climate change data
+futureclim <- "RCP8.5"
+fclim <- 85
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "raster", "sf", "knitr", "dismo", "gam", "randomForest", "gbm", "biomod2")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+  path.in.general <- paste(path.root, "/input", sep = "")
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+```{r}
+memory.limit(size=25000)
+```
+
+####  Get the Occurrence Data
+
+```{r}
+setwd(path.in.specific)
+local.df <- read.csv(paste(spname, "_tr_local_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+local.df # look at data - should include all variables
+```
+```{r}
+table(local.df$Species) # examine  frequencies
+```
+### Get Global Projection for Pseudoabsence down-weighting
+
+```{r}
+setwd(path.out.specific)
+GlobalProj <- get(load(file = paste0( spname, "_probSTD.mean.ens.RData")))
+GlobalProj
+```
+
+### Assigning weight to pseudo absences according to: 
+Gallien L, Douzet R, Pratte S, Zimmermann NE, Thuiller W (2012) Invasive species distribution models – how violating the equilibrium assumption can create new insights. Global Ecology and Biogeography 21: 1126–1136. https://doi.org/10.1111/j.1466-8238.2012.00768.x 
+
+```{r}
+weights_gl <- 1/(1+((GlobalProj/(GlobalProj - 1))^2)) # inverse logistic transformation
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+weights_gl <- crop(weights_gl, local.bufbbox )
+
+weights_gl
+```
+
+```{r}
+pres <- subset(local.df, Species == 1)
+pres$yweights <- 1
+
+abs <- subset(local.df, Species == 0)
+abs
+```
+
+```{r}
+weight_values_ab <- raster::extract(weights_gl, cbind(abs$tr.Lon, abs$tr.Lat))
+
+abs$yweights <- weight_values_ab
+```
+```{r}
+local.df <- rbind(pres, abs)
+local.df
+```
+
+### Get  variables selected during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_local.RData")))
+keep
+```
+
+```{r}
+header <- c("FNETID", "Species", "tr.Lon", "tr.Lat")
+oo <- c(header, keep)
+picked.df <- local.df %>% dplyr::select(oo)
+head(picked.df, 2)
+```
+
+```{r}
+pres <- subset(picked.df, Species == 1)
+pres$yweights <- 1
+
+abs <- subset(picked.df, Species == 0)
+```
+
+```{r}
+weight_values_ab <- raster::extract(weights_gl, cbind(abs$tr.Lon, abs$tr.Lat))
+
+abs$yweights <- weight_values_ab
+```
+```{r}
+picked.df <- rbind(pres, abs)
+picked.df
+```
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+```{r}
+setwd(path.in.general)
+stack <- get(load("HI_bioclimstack.RData"))
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+
+stack <- crop(stack, local.bufbbox )
+stack
+
+```
+```{r}
+path.in.layers <- paste(path.in.general, "/yearly_and_seasonal_projections_HI/",sep = "") 
+path.in.layers
+
+```
+
+```{r}
+setwd(path.in.layers)
+# Extract all .rds files
+list <- list.files( pattern =".tif", full.names = TRUE)
+
+# Define pattern for grepl
+pattern <- paste(keep, sep="", collapse="|")
+
+
+# Now we can subset list with the following
+pickedvars <- list[grepl(pattern,list)]
+
+stack1 <- raster::stack(pickedvars)
+stack1
+```
+
+
+
+#### Future RCP 8.5
+
+```{r}
+#cmip_eightfive <- raster::getData(name = 'CMIP5', var = 'bio', res = 2.5,
+#        rcp = fclim, model = 'AC', year = 70,
+#        path = paste0(path.in.general, "/bioclims_CMIP5_ssp585"))
+```
+
+```{r}
+# get WorldClim bioclimatic variable rasters
+#elev <- raster::getData(name = "worldclim", var = "alt", res = 2.5, lat = , lon = )
+#elev
+```
+
+Using Hi-specific climate variables, and following bioclim namings out of convenience
+
+```{r}
+path.preds <- paste(path.root, "/input/yearly_and_seasonal_projections_HI",  sep = "")
+setwd(path.preds)
+future <- list.files(pattern = "rcp85.tif") # list of .img files; $ strips extra
+cmip_eightfive <- stack(future)# examine
+cmip_eightfive
+```
+
+```{r}
+#cmip_eightfive <- raster::stack(cmip_eightfive, elev)
+#names(cmip_eightfive)
+```
+
+```{r}
+names(cmip_eightfive) <- names(stack)
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+
+cmip_eightfive <- crop(cmip_eightfive, local.bufbbox )
+
+cmip_eightfive
+```
+
+# BIOMOD2 
+
+```{r}
+my_models <- c("GLM","GAM","MAXENT.Phillips","RF","GBM") # Algorithms to fit the models
+```
+
+```{r}
+# Settings for the model algorithms
+model_opt <- BIOMOD_ModelingOptions(GLM=list(type='quadratic', interaction.level=0),GBM=list(n.trees=1000),MAXENT.Phillips = list(path_to_maxent.jar = "C:/Users/kcbro/Documents/R/win-library/4.0/dismo/java/maxent.jar",product=FALSE),GAM=list(k=3))
+
+```
+
+```{r}
+local.df <- dplyr::select(local.df, !(isle.y))
+local.df <- dplyr::select(local.df, !(isle.x))
+local.df <- na.omit(local.df)
+local.df
+```
+
+PICKED VARS ONLY
+
+```{r}
+local.df <- na.omit(picked.df) # switch to local.df if you want to experiment with all vars.
+local.df
+```
+
+```{r}
+# Clean data
+myrespvar <- as.numeric(local.df$Species)
+myRespName <- spname
+#myexplvar <- local.df[, 7:18]
+#myresp.xy <- local.df[, 5:6]
+
+## FOR PICKED!! Be careful here
+myexplvar <- local.df[, 5:11]
+myresp.xy <- local.df[, 3:4]
+
+clean_data <- BIOMOD_FormatingData(resp.var=myrespvar, expl.var=myexplvar, resp.xy=myresp.xy, resp.name=myRespName)
+```
+```{r}
+clean_data
+```
+
+```{r}
+all_models <- BIOMOD_Modeling(data=clean_data, models=my_models, models.options=model_opt, NbRunEval = 4, DataSplit = 80, VarImport = 3, do.full.models = F, modeling.id = "local", Yweights=local.df$yweights)
+
+```
+```{r}
+all_models
+```
+
+```{r}
+# get all models evaluation
+myBiomodModelEval <- get_evaluations(all_models)
+# print the dimnames of this object
+dimnames(myBiomodModelEval)
+```
+```{r}
+# let's print the TSS scores of Random Forest
+myBiomodModelEval["TSS","Testing.data","GLM",,]
+myBiomodModelEval["TSS","Testing.data","GAM",,]
+myBiomodModelEval["TSS","Testing.data","MAXENT.Phillips",,]
+myBiomodModelEval["TSS","Testing.data","RF",,]
+myBiomodModelEval["TSS","Testing.data","GBM",,]
+```
+
+```{r}
+# let's print the ROC scores of all selected models
+myBiomodModelEval["ROC","Testing.data",,,]
+```
+
+```{r}
+# print variable importances
+get_variables_importance(all_models)
+```
+
+
+```{r}
+stack3 <- stack(stack1) #stack
+stack3
+```
+
+```{r}
+all_models
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = stack3,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+```{r}
+stack3
+```
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj) #, str.grep = 'GBM')
+```
+```{r}
+myBiomodProj
+```
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+modeling.output = all_models,
+chosen.models = 'all',
+em.by='all',
+eval.metric = c('TSS'),
+#eval.metric.quality.threshold = c(0.4),
+prob.mean = T,
+prob.cv = T,
+prob.ci = T,
+prob.ci.alpha = 0.03,
+prob.median = T,
+committee.averaging = T,
+prob.mean.weight = T,
+prob.mean.weight.decay = 'proportional' )
+```
+```{r}
+# get evaluation scores
+get_evaluations(myBiomodEM)
+```
+
+```{r}
+myBiomodEF_current <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj)
+myBiomodEF_current
+```
+
+```{r}
+plot(myBiomodEF_current, str.grep = 'Species.name_EMmeanByTSS_mergedAlgo_mergedRun_mergedData')
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_current
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster <- raster("Species.name_EMmeanByTSS_mergedAlgo_mergedRun_mergedData.tiff")
+```
+
+```{r}
+plot(final_raster)
+```
+
+```{r}
+setwd(path.out.specific)
+writeRaster(final_raster, paste0(spname,"_final_ensemble_raster.img"), format = "HFA", overwrite = TRUE)
+```
+
+
+## FUTURE CLIMATE
+
+```{r}
+cmip3 <- stack(cmip_eightfive)
+cmip3
+```
+```{r}
+cmip3 <- raster::subset(cmip3, colnames(local.df[5:11]))
+cmip3
+```
+
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = cmip3,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj) #, str.grep = 'GBM')
+```
+```{r}
+myBiomodProj
+```
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+modeling.output = all_models,
+chosen.models = 'all',
+em.by='all',
+eval.metric = c('TSS'),
+eval.metric.quality.threshold = c(0.65),
+prob.mean = T,
+prob.cv = T,
+prob.ci = T,
+prob.ci.alpha = 0.03,
+prob.median = T,
+committee.averaging = T,
+prob.mean.weight = T,
+prob.mean.weight.decay = 'proportional' )
+```
+```{r}
+# get evaluation scores
+get_evaluations(myBiomodEM)
+```
+
+```{r}
+myBiomodEF_future <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj)
+myBiomodEF_future
+```
+
+```{r}
+plot(myBiomodEF_current, str.grep = 'Species.name_EMmeanByTSS_mergedAlgo_mergedRun_mergedData')
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_future
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, futureclim, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster <- raster("Species.name_EMmeanByTSS_mergedAlgo_mergedRun_mergedData.tiff")
+```
+
+```{r}
+plot(final_raster)
+```
+
+```{r}
+setwd(path.out.specific)
+writeRaster(final_raster, paste0(spname, futureclim, "_final_ensemble_raster.img"), format = "HFA", overwrite = TRUE)
+```
+
+
+
+
+
