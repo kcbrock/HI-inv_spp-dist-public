@@ -1,0 +1,510 @@
+---
+title: "Cenchrus setaceus - Global Model Outputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+# Name of Species being modelled
+```{r}
+spname <- "Cenchrus_setaceus"
+```
+```{r}
+futureclim <- "RCP8.5"
+fclim <- 85
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "terra", "sf", "knitr", "dismo", "gam", "randomForest", "gbm", "biomod2")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+  path.in.general <- paste(path.root, "/input", sep = "")
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+
+```{r}
+#memory.limit(35000)
+```
+
+
+####  Get the Occurrence Data
+
+```{r}
+setwd(path.in.specific)
+global.df <- read.csv(paste(spname, "_tr_global_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+head(global.df) # look at data - should include all variables
+```
+
+
+```{r}
+table(global.df$Species) # examine  frequencies
+```
+
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_global.RData")))
+keep
+```
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+
+```{r}
+setwd(path.in.specific)
+#rasterOptions(maxmemory=1e+07)
+#stack <- get(load("bioclimstack.RData"))
+stack <- terra::rast( paste0(spname, "_bioclimstack.tif"))
+stack
+```
+
+
+```{r}
+stack <- terra::subset(stack, keep)
+#stack3 <- stack(stack)
+stack
+
+#writeRaster(stack3,"tempstack.img", format = "HFA", overwrite = TRUE)
+```
+
+
+#### Future RCP 8.5
+
+Un-comment this for the first use to get future climate data
+
+
+<!-- ```{r} -->
+<!-- setwd(path.in.general) -->
+<!-- envs<-terra::rast("wc2.1.30s_bioc_ACCESS-ESM1-5_ssp585_2081-2100.tif") -->
+<!-- envs -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- setwd(path.in.general) -->
+<!-- elev <- terra::rast("wc2.1_30s_elev.tif") -->
+<!-- elev -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- combined <- c(envs, elev) -->
+
+<!-- names(combined) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "alt"  ) -->
+<!-- names(combined) -->
+
+<!-- combined -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #global.bufbbox <- extent(min(global.pres$decimalLongitude) - (0.00833 * buffer), max(global.pres$decimalLongitude) + (0.00833 * buffer), -->
+<!-- #               min(global.pres$decimalLatitude) - (0.00833 * buffer), max(global.pres$decimalLatitude) + (0.00833 * buffer)) -->
+
+<!-- #making a bbox of the entire world, excluding the arctic and antarctica -->
+
+<!-- xmin = -179.9999 -->
+<!-- xmax =  179.9999 -->
+<!-- ymin = -61 -->
+<!-- ymax =  61 -->
+
+<!-- global.bufbbox <- extent(xmin, xmax, ymin, ymax) -->
+
+<!-- global.bufbbox -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- combined <- terra::crop(combined, global.bufbbox) -->
+<!-- combined -->
+<!-- #raster::crop(raster::rasterize(global.bufbboxSP, template1), global.bufbboxSP) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- setwd(path.in.general) -->
+<!-- #save(combined, file = "cmip_eightfive.RData") # save .RData -->
+<!-- writeRaster(combined, filename ="cmip_eightfive.tif", overwrite = T) # save as .img file -->
+<!-- ``` -->
+
+```{r}
+setwd(path.in.general)
+cmip_eightfive <- terra::rast("cmip_eightfive.tif")
+
+cmip_eightfive <- terra::subset(cmip_eightfive, keep)
+cmip_eightfive
+```
+
+
+
+<!-- ## clipping to the buffered pts too -->
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- global.bufptSF <- get(load(file = paste0(spname, "_global.bufptSF.RData"))) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- cmip_eightfive_buffered <- terra::crop(cmip_eightfive, global.bufptSF) -->
+<!-- cmip_eightfive_buffered -->
+<!-- #raster::crop(raster::rasterize(global.bufbboxSP, template1), global.bufbboxSP) -->
+
+<!-- ``` -->
+
+
+# BIOMOD2 detour
+
+
+```{r}
+global.df
+```
+
+```{r}
+responsevar <- c("FNETID", "Species", "tr.Lon", "tr.Lat" )
+responsevar
+keep
+```
+
+```{r}
+global.df <- global.df %>% dplyr::select(responsevar, keep) 
+global.df
+```
+
+
+Getting a weird error!?!?  this is probably the chunk that's the problem.  Double check indexing
+```{r}
+# Clean data
+myrespvar <- as.numeric(global.df$Species)
+myRespName <- spname
+myexplvar <- global.df[, 5:length(global.df)]
+myresp.xy <- global.df[, 3:4]
+clean_data <- BIOMOD_FormatingData(resp.var=myrespvar, expl.var=myexplvar, resp.xy=myresp.xy, resp.name=myRespName)
+```
+
+```{r}
+clean_data
+```
+
+```{r}
+my_models <- c("GLM","GAM","MAXENT.Phillips","RF","GBM") # Algorithms to fit the models
+```
+
+```{r}
+# Settings for the model algorithms
+model_opt <- BIOMOD_ModelingOptions(GLM=list(type='quadratic', interaction.level=0),GBM=list(n.trees=1000),MAXENT.Phillips = list(path_to_maxent.jar = "C:/RFolder/R/win-library/4.1/dismo/java/maxent.jar",product=FALSE),GAM=list(k=3))
+
+```
+
+```{r}
+all_models <- BIOMOD_Modeling(data=clean_data, models=my_models, models.options=model_opt, NbRunEval = 6, DataSplit = 80, VarImport = 3, do.full.models = F, modeling.id = "global")
+```
+
+```{r}
+all_models
+```
+
+```{r}
+# get all models evaluation
+myBiomodModelEval <- get_evaluations(all_models)
+# print the dimnames of this object
+dimnames(myBiomodModelEval)
+```
+```{r}
+# let's print the ROC scores of all selected models
+myBiomodModelEval["TSS","Testing.data",,,]
+```
+
+```{r}
+# let's print the ROC scores of all selected models
+myBiomodModelEval["ROC","Testing.data",,,]
+```
+```{r}
+# print variable importances
+get_variables_importance(all_models)
+```
+
+
+<!-- ```{r} -->
+<!-- df <- local.df %>% dplyr::select(!(FNETID:tr.Lat)) %>% dplyr::select(!(yweights))# %>% dplyr::rename(x = tr.Lon, y = tr.Lat) -->
+<!-- #colnames(df) -->
+<!-- ``` -->
+
+
+
+
+```{r}
+all_models
+```
+
+
+### Project to HI
+
+
+
+```{r}
+xmin = -160.5613
+xmax =  -154.7061
+ymin = 17.9578 
+ymax =  22.3496
+
+projPoly <- terra::ext(xmin, xmax, ymin, ymax)
+
+projPoly
+```
+
+```{r}
+predsProj <- terra::crop(stack, projPoly)
+#predsProj <- raster::mask(predsProj, projPoly)
+#predsProj <- raster::stack(predsProj)
+predsProj
+```
+```{r}
+library(raster)
+predsProj <- raster::stack(predsProj)
+  predsProj
+```
+
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = predsProj,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GLM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GAM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'MAXENT.Phillips')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'RF')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GBM')
+```
+
+```{r}
+myBiomodProj
+```
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+modeling.output = all_models,
+chosen.models = 'all',
+em.by='all',
+eval.metric = c('ROC'),
+eval.metric.quality.threshold = c(0.63),
+prob.mean = T,
+prob.cv = T,
+prob.ci = T,
+prob.ci.alpha = 0.03,
+prob.median = T,
+committee.averaging = T,
+prob.mean.weight = T,
+prob.mean.weight.decay = 'proportional' )
+```
+```{r}
+# get evaluation scores
+get_evaluations(myBiomodEM)
+```
+
+
+```{r}
+myBiomodEF_current <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj)
+myBiomodEF_current
+```
+
+```{r}
+plot(myBiomodEF_current, str.grep = 'meanBy')
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_current
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster <- raster("Cenchrus.setaceus_EMmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
+```
+
+```{r}
+plot(final_raster)
+```
+
+```{r}
+setwd(path.out.specific)
+writeRaster(final_raster, paste0(spname,"_final_ensemble_raster.img"), format = "HFA", overwrite = TRUE)
+```
+
+
+## FUTURE CLIMATE
+
+```{r}
+cmip3 <- terra(cmip_eightfive)
+cmip3
+```
+
+```{r}
+predsProj_cmip <- raster::crop(cmip3, projPoly)
+#predsProj <- raster::mask(predsProj, projPoly)
+predsProj_cmip <- raster::stack(predsProj_cmip)
+predsProj_cmip
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = cmip3,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj) #, str.grep = 'GBM')
+```
+```{r}
+myBiomodProj
+```
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+modeling.output = all_models,
+chosen.models = 'all',
+em.by='all',
+eval.metric = c('TSS'),
+#eval.metric.quality.threshold = c(0.4),
+prob.mean = T,
+prob.cv = T,
+prob.ci = T,
+prob.ci.alpha = 0.03,
+prob.median = T,
+committee.averaging = T,
+prob.mean.weight = T,
+prob.mean.weight.decay = 'proportional' )
+```
+```{r}
+# get evaluation scores
+get_evaluations(myBiomodEM)
+```
+
+```{r}
+myBiomodEF_future <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj)
+myBiomodEF_future
+```
+
+```{r}
+plot(myBiomodEF_current, str.grep = 'Cenchrus.setaceus_EMmeanByTSS_mergedAlgo_mergedRun_mergedData')
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_future
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, futureclim, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster <- raster("Cenchrus.setaceus_EMmeanByTSS_mergedAlgo_mergedRun_mergedData.tiff")
+```
+
+```{r}
+plot(final_raster)
+```
+
+```{r}
+setwd(path.out.specific)
+writeRaster(final_raster, paste0(spname, futureclim, "_final_ensemble_raster.img"), format = "HFA", overwrite = TRUE)
+```
+
