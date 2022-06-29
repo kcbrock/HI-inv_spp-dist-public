@@ -74,6 +74,7 @@ stack
 ```
 
 
+
 ```{r}
 stack <- terra::subset(stack, keep)
 #stack3 <- stack(stack)
@@ -252,20 +253,34 @@ all_models
 ### Project to HI
 
 
-
 ```{r}
 xmin = -160.5613
 xmax =  -154.7061
 ymin = 17.9578 
 ymax =  22.3496
 
-projPoly <- terra::ext(xmin, xmax, ymin, ymax)
+projPoly <- terra::as.polygons(terra::ext(xmin, xmax, ymin, ymax))
 
 projPoly
 ```
 
+
 ```{r}
-predsProj <- terra::crop(stack, projPoly)
+setwd(path.in.general)
+baseline <- list.files(path = path.in.general, pattern = "wc2.1_30s", full.names = T) # list of .img files; $ strips extra
+combined <- terra::rast(baseline)# examine
+
+
+names(combined) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "alt"  )
+
+combined <- terra::subset(combined, keep)
+#stack3 <- stack(stack)
+combined 
+```
+
+```{r}
+library(raster)
+predsProj <- terra::crop(combined, projPoly )
 #predsProj <- raster::mask(predsProj, projPoly)
 #predsProj <- raster::stack(predsProj)
 predsProj
@@ -322,7 +337,7 @@ modeling.output = all_models,
 chosen.models = 'all',
 em.by='all',
 eval.metric = c('ROC'),
-eval.metric.quality.threshold = c(0.63),
+eval.metric.quality.threshold = c(0.80),
 prob.mean = T,
 prob.cv = T,
 prob.ci = T,
@@ -346,7 +361,7 @@ myBiomodEF_current
 ```
 
 ```{r}
-plot(myBiomodEF_current, str.grep = 'meanBy')
+#plot(myBiomodEF_current, str.grep = 'EMcaByROC')
 ```
 ```{r}
 get_predictions(myBiomodEF_current)
@@ -383,28 +398,28 @@ list.files('outdir.ensproj')
 newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
 setwd(newdir)
 final_raster <- raster("Cenchrus.setaceus_EMmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
-```
 
-```{r}
+final_raster
+
 plot(final_raster)
 ```
 
 ```{r}
 setwd(path.out.specific)
-writeRaster(final_raster, paste0(spname,"_final_ensemble_raster.img"), format = "HFA", overwrite = TRUE)
+terra::writeRaster(final_raster, paste0(spname,"_final_ensemble_raster.img"),  overwrite = TRUE)
 ```
 
 
 ## FUTURE CLIMATE
 
+
 ```{r}
-cmip3 <- terra(cmip_eightfive)
-cmip3
+predsProj_cmip <- terra::crop(cmip_eightfive,  projPoly)
+#predsProj <- raster::mask(predsProj, projPoly)
+predsProj_cmip
 ```
 
 ```{r}
-predsProj_cmip <- raster::crop(cmip3, projPoly)
-#predsProj <- raster::mask(predsProj, projPoly)
 predsProj_cmip <- raster::stack(predsProj_cmip)
 predsProj_cmip
 ```
@@ -413,7 +428,7 @@ predsProj_cmip
 # projection over the globe under current conditions
 myBiomodProj <- BIOMOD_Projection(
 modeling.output = all_models,
-new.env = cmip3,
+new.env = predsProj_cmip,
 proj.name = 'current',
 selected.models = 'all',
 binary.meth = 'TSS',
@@ -425,7 +440,7 @@ myBiomodProj
 
 ```{r}
 # make some plots sub-selected by str.grep argument
-plot(myBiomodProj) #, str.grep = 'GBM')
+#plot(myBiomodProj) #, str.grep = 'GBM')
 ```
 ```{r}
 myBiomodProj
@@ -436,8 +451,8 @@ myBiomodEM <- BIOMOD_EnsembleModeling(
 modeling.output = all_models,
 chosen.models = 'all',
 em.by='all',
-eval.metric = c('TSS'),
-#eval.metric.quality.threshold = c(0.4),
+eval.metric = c('ROC'),
+eval.metric.quality.threshold = c(0.8),
 prob.mean = T,
 prob.cv = T,
 prob.ci = T,
@@ -460,7 +475,7 @@ myBiomodEF_future
 ```
 
 ```{r}
-plot(myBiomodEF_current, str.grep = 'Cenchrus.setaceus_EMmeanByTSS_mergedAlgo_mergedRun_mergedData')
+#plot(myBiomodEF_current, str.grep = 'Cenchrus.setaceus_EMmedianByROC_mergedAlgo_mergedRun_mergedData')
 ```
 ```{r}
 get_predictions(myBiomodEF_current)
@@ -496,7 +511,7 @@ list.files('outdir.ensproj')
 ```{r}
 newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
 setwd(newdir)
-final_raster <- raster("Cenchrus.setaceus_EMmeanByTSS_mergedAlgo_mergedRun_mergedData.tiff")
+final_raster <- raster("Cenchrus.setaceus_EMwmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
 ```
 
 ```{r}
