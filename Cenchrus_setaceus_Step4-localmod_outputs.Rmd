@@ -1,0 +1,840 @@
+---
+title: "Cenchrus setaceus - local Model Outputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+# Name of Species being modelled
+```{r}
+spname <- "Cenchrus_setaceus"
+```
+```{r}
+futureclim <- "RCP8.5"
+fclim <- 85
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "raster", "sf", "knitr", "dismo", "gam", "randomForest", "gbm", "biomod2")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+  path.in.general <- paste(path.root, "/input", sep = "")
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+```{r}
+memory.limit(size=35000)
+```
+
+####  Get the Occurrence Data
+
+```{r}
+setwd(path.in.specific)
+local.df <- read.csv(paste(spname, "_tr_local_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+local.df # look at data - should include all variables
+```
+```{r}
+table(local.df$Species) # examine  frequencies
+```
+### Get Global Projection for Pseudoabsence down-weighting
+
+setwd(path.out.specific)
+terra::writeRaster(final_raster, paste0(spname,"_final_ensemble_raster.img"),  overwrite = TRUE)
+
+```{r}
+setwd(path.out.specific)
+GlobalProj <- raster::raster(paste0(spname,"_final_ensemble_raster.img"))
+GlobalProj
+```
+```{r}
+plot(GlobalProj)
+```
+
+
+Need to standardize the probabilities (from 0to 1)
+
+```{r}
+maxValue(GlobalProj)
+minValue(GlobalProj)
+```
+
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(GlobalProj))) {
+    m1 <- GlobalProj[[i]] # get a prob map
+    m2 <- 1/maxValue(GlobalProj[[i]]) * GlobalProj[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(GlobalProj[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  GlobalProj <- stack(layers)
+  GlobalProj
+```
+```{r}
+maxValue(GlobalProj)
+minValue(GlobalProj)
+```
+
+If you get "too large for int" warning, I think it can be ignored
+Straight out of the publiction ---
+```{r}
+weights_gl <- 1/(1+((GlobalProj/(GlobalProj - 1))^2)) # inverse logistic transformation
+
+weights_gl
+```
+
+
+```{r}
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+weights_gl <- raster::crop(weights_gl, local.bufbbox )
+
+weights_gl
+```
+
+```{r}
+pres <- subset(local.df, Species == 1)
+pres$yweights <- 1
+
+abs <- subset(local.df, Species == 0)
+
+```
+
+```{r}
+weight_values_ab <- raster::extract(weights_gl, cbind(abs$tr.Lon, abs$tr.Lat))
+
+abs$yweights <- weight_values_ab
+```
+```{r}
+local.df <- rbind(pres, abs)
+local.df
+```
+```{r}
+max(local.df$yweights)
+min(local.df$yweights)
+mean(local.df$yweights)
+```
+```{r}
+absences <- subset(local.df, local.df$Species == 0)
+
+
+hist(absences$yweights)
+```
+
+
+
+
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_local.RData")))
+keep
+```
+
+```{r}
+header <- c("FNETID", "Species", "tr.Lon", "tr.Lat")
+oo <- c(header, keep)
+picked.df <- local.df %>% dplyr::select(oo)
+picked.df
+```
+
+```{r}
+pres <- subset(picked.df, Species == 1)
+pres$yweights <- 1
+
+abs <- subset(picked.df, Species == 0)
+```
+
+```{r}
+weight_values_ab <- raster::extract(weights_gl, cbind(abs$tr.Lon, abs$tr.Lat))
+
+abs$yweights <- weight_values_ab
+```
+```{r}
+picked.df <- rbind(pres, abs)
+picked.df
+```
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+```{r}
+setwd(path.in.general)
+stack <- terra::rast( "HI_bioclimstack.tif")
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+
+stack <- crop(stack, local.bufbbox )
+stack
+
+```
+
+#### FUTURE
+
+
+```{r}
+setwd(path.in.general)
+#baseline <- list.files(pattern = "new_baseline_bioclims.tif") # list of .img files; $ strips extra
+#baseline_stack <- stack(baseline)# examine
+elevation <- terra::rast("elevhi.tif")
+elevation <- terra::project(elevation, stack)
+elevation
+```
+
+
+
+
+#### Future NCAR RCP 8.5
+
+```{r}
+setwd(path.in.general)
+NCAR8.5 <- terra::rast("new_NCAR_future_projection_rcp85_bioclims.tif")
+NCAR8.5
+```
+
+```{r}
+seasonal <- list.files(path = path.in.general, pattern = "rcp85_NCAR", full.names = T)
+seasonal
+
+seasonal_stack <- terra::rast(seasonal)# examine
+seasonal_stack
+```
+
+```{r}
+NCAR8.5_stack <- c(NCAR8.5, elevation, seasonal_stack)
+NCAR8.5_stack
+```
+    
+```{r}
+names(NCAR8.5_stack) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "alt", "bio21", "bio22", "bio23", "bio24", "bio25", "bio26", "bio27", "bio28"  )
+names(NCAR8.5_stack)
+
+NCAR8.5_stack 
+```
+#### Future IPRC RCP 8.5
+
+```{r}
+setwd(path.in.general)
+IPRC8.5 <- terra::rast("new_IPRC_future_projection_rcp85_bioclims.tif")
+IPRC8.5
+```
+
+```{r}
+seasonal <- list.files(path = path.in.general, pattern = "rcp85_IPRC", full.names = T)
+seasonal
+
+seasonal_stack <- terra::rast(seasonal)# examine
+seasonal_stack
+```
+
+```{r}
+IPRC8.5_stack <- c(IPRC8.5, elevation, seasonal_stack)
+IPRC8.5_stack
+```
+    
+```{r}
+names(IPRC8.5_stack) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "alt", "bio21", "bio22", "bio23", "bio24", "bio25", "bio26", "bio27", "bio28"  )
+names(IPRC8.5_stack)
+
+IPRC8.5_stack 
+```
+
+
+```{r}
+#cmip_eightfive <- raster::getData(name = 'CMIP5', var = 'bio', res = 2.5,
+#        rcp = fclim, model = 'AC', year = 70,
+#        path = paste0(path.in.general, "/bioclims_CMIP5_ssp585"))
+```
+
+```{r}
+# get WorldClim bioclimatic variable rasters
+#elev <- raster::getData(name = "worldclim", var = "alt", res = 2.5, lat = , lon = )
+#elev
+```
+
+```{r}
+#path.preds <- paste(path.root, "/input/yearly_and_seasonal_projections_HI",  sep = "")
+##setwd(path.preds)
+#future <- list.files(pattern = "rcp85.tif") # list of .img files; $ strips extra
+#cmip_eightfive <- stack(future)# examine
+#cmip_eightfive
+```
+
+```{r}
+#cmip_eightfive <- raster::stack(cmip_eightfive, elev)
+#names(cmip_eightfive)
+```
+
+<!-- ```{r} -->
+<!-- names(cmip_eightfive) <- names(stack) -->
+
+<!-- xmin = -160.3722 -->
+<!-- xmax =  -154.5714 -->
+<!-- ymin =  18.7084 -->
+<!-- ymax =  22.4615 -->
+
+<!-- local.bufbbox <- extent(xmin, xmax, ymin, ymax) -->
+
+
+<!-- cmip_eightfive <- crop(cmip_eightfive, local.bufbbox ) -->
+
+<!-- cmip_eightfive -->
+<!-- ``` -->
+
+# BIOMOD2 
+
+```{r}
+my_models <- c("GLM","GAM","MAXENT.Phillips","RF","GBM") # Algorithms to fit the models
+```
+
+```{r}
+# Settings for the model algorithms
+model_opt <- BIOMOD_ModelingOptions(GLM=list(type='quadratic', interaction.level=0),GBM=list(n.trees=1000),MAXENT.Phillips = list(path_to_maxent.jar = "C:/RFolder/R/win-library/4.1/dismo/java/maxent.jar",product=FALSE),GAM=list(k=3))
+
+```
+
+
+```{r}
+#local.df <- dplyr::select(local.df, !(isle.y))
+#local.df <- dplyr::select(local.df, !(isle.x))
+#local.df <- na.omit(local.df)
+#local.df
+```
+```{r}
+responsevar <- c("FNETID", "Species", "tr.Lon", "tr.Lat" )
+responsevar
+keep
+yweights <- c("yweights")
+yweights
+```
+
+```{r}
+local.df <- local.df %>% dplyr::select(responsevar, keep, yweights) 
+local.df
+```
+
+```{r}
+# Clean data
+myrespvar <- as.numeric(local.df$Species)
+myRespName <- spname
+myexplvar <- local.df[, 5:(length(local.df)-1)]
+myresp.xy <- local.df[, 3:4]
+clean_data <- BIOMOD_FormatingData(resp.var=myrespvar, expl.var=myexplvar, resp.xy=myresp.xy, resp.name=myRespName)
+```
+```{r}
+clean_data
+```
+
+```{r}
+all_models <- BIOMOD_Modeling(data=clean_data, models=my_models, models.options=model_opt, NbRunEval = 6, DataSplit = 80, VarImport = 3, do.full.models = F, modeling.id = "local", Yweights=local.df$yweights)
+
+```
+
+```{r}
+# let's print the ROC scores of all selected models
+myBiomodModelEval["TSS","Testing.data",,,]
+```
+
+```{r}
+# let's print the ROC scores of all selected models
+myBiomodModelEval["ROC","Testing.data",,,]
+```
+```{r}
+# print variable importances
+get_variables_importance(all_models)
+```
+
+```{r}
+# get all models evaluation
+myBiomodModelEval <- get_evaluations(all_models)
+# print the dimnames of this object
+dimnames(myBiomodModelEval)
+```
+
+```{r}
+all_models
+```
+### Project to HI
+
+
+```{r}
+xmin = -160.5613
+xmax =  -154.7061
+ymin = 17.9578 
+ymax =  22.3496
+
+projPoly <- terra::as.polygons(terra::ext(xmin, xmax, ymin, ymax))
+
+projPoly
+```
+```{r}
+
+stack <- terra::subset(stack, keep)
+#stack3 <- stack(stack)
+stack 
+```
+
+```{r}
+
+predsProj <- terra::crop(stack, projPoly )
+#predsProj <- raster::mask(predsProj, projPoly)
+#predsProj <- raster::stack(predsProj)
+predsProj
+```
+# ```{r}
+# library(raster)
+# predsProj <- raster::stack(predsProj)
+#   predsProj
+# ```
+
+
+<!-- ```{r} -->
+<!-- xmin = -160.5613 -->
+<!-- xmax =  -154.7061 -->
+<!-- ymin = 17.9578  -->
+<!-- ymax =  22.3496 -->
+
+<!-- projPoly <- terra::as.polygons(terra::ext(xmin, xmax, ymin, ymax)) -->
+
+<!-- projPoly -->
+<!-- ``` -->
+
+
+```{r}
+stack3 <- stack(stack)
+stack3
+```
+```{r}
+all_models
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = stack3,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GLM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GAM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'MAXENT.Phillips')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'RF')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj, str.grep = 'GBM')
+```
+
+```{r}
+myBiomodProj
+```
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+modeling.output = all_models,
+chosen.models = 'all',
+em.by='all',
+eval.metric = c('ROC'),
+eval.metric.quality.threshold = c(0.7),
+prob.mean = T,
+prob.cv = T,
+prob.ci = T,
+prob.ci.alpha = 0.03,
+prob.median = T,
+committee.averaging = T,
+prob.mean.weight = T,
+prob.mean.weight.decay = 'proportional' )
+```
+```{r}
+# get evaluation scores
+get_evaluations(myBiomodEM)
+```
+
+```{r}
+myBiomodEF_current <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj)
+myBiomodEF_current
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+```{r}
+#plot(myBiomodEF_current, str.grep = 'Cenchrus.setaceus_EMwmeanByROC_mergedAlgo_mergedRun_mergedData')
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_current
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster <- raster("Cenchrus.setaceus_EMwmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
+
+final_raster
+
+plot(final_raster)
+```
+###save
+```{r}
+setwd(path.out.specific)
+terra::writeRaster(final_raster, paste0(spname,"_current", "_local", "_final_ensemble_raster_local.img"),  overwrite = TRUE)
+```
+
+## FUTURE CLIMATE NCAR8.5
+
+```{r}
+NCAR8.5_stack
+```
+```{r}
+
+NCAR8.5_stack <- terra::subset(NCAR8.5_stack, keep)
+#stack3 <- stack(stack)
+NCAR8.5_stack 
+```
+```{r}
+predsProjNCAR <- terra::crop(NCAR8.5_stack, projPoly )
+#predsProj <- raster::mask(predsProj, projPoly)
+predsProjNCAR <- raster::stack(predsProjNCAR)
+predsProjNCAR
+```
+
+
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj_NCAR <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = predsProjNCAR,
+proj.name = 'future_NCAR',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj_NCAR
+```
+
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_NCAR, str.grep = 'GLM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_NCAR, str.grep = 'GAM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_NCAR, str.grep = 'MAXENT.Phillips')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_NCAR, str.grep = 'RF')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_NCAR, str.grep = 'GBM')
+```
+
+```{r}
+myBiomodProj_NCAR
+```
+
+```{r}
+myBiomodEF_futureNCAR <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj_NCAR)
+myBiomodEF_futureNCAR
+```
+
+```{r}
+get_predictions(myBiomodEF_futureNCAR)
+```
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_futureNCAR
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster_NCAR8.5 <- raster("Cenchrus.setaceus_EMwmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
+
+final_raster_NCAR8.5
+
+plot(final_raster_NCAR8.5)
+```
+###save
+```{r}
+setwd(path.out.specific)
+terra::writeRaster(final_raster_NCAR8.5, paste0(spname,"_NCAR8.5", "_local", "_final_ensemble_raster.img"),  overwrite = TRUE)
+```
+
+
+## FUTURE CLIMATE IPRC8.5
+
+```{r}
+IPRC8.5_stack
+```
+```{r}
+
+IPRC8.5_stack <- terra::subset(IPRC8.5_stack, keep)
+#stack3 <- stack(stack)
+IPRC8.5_stack 
+```
+```{r}
+predsProjIPRC <- terra::crop(IPRC8.5_stack, projPoly )
+#predsProj <- raster::mask(predsProj, projPoly)
+predsProjIPRC <- raster::stack(predsProjIPRC)
+predsProjIPRC
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj_IPRC <- BIOMOD_Projection(
+modeling.output = all_models,
+new.env = predsProjIPRC,
+proj.name = 'future_IPRC',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj_IPRC
+```
+
+
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_IPRC, str.grep = 'GLM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_IPRC, str.grep = 'GAM')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_IPRC, str.grep = 'MAXENT.Phillips')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_IPRC, str.grep = 'RF')
+```
+```{r}
+# make some plots sub-selected by str.grep argument
+plot(myBiomodProj_IPRC, str.grep = 'GBM')
+```
+
+```{r}
+myBiomodProj_IPRC
+```
+
+```{r}
+myBiomodEF_futureIPRC <- BIOMOD_EnsembleForecasting(
+EM.output = myBiomodEM,
+projection.output = myBiomodProj_IPRC)
+myBiomodEF_futureIPRC
+```
+
+```{r}
+get_predictions(myBiomodEF_futureIPRC)
+```
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_futureIPRC
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+
+```{r}
+newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "")
+setwd(newdir)
+final_raster_IPRC8.5 <- raster("Cenchrus.setaceus_EMwmeanByROC_mergedAlgo_mergedRun_mergedData.tiff")
+
+final_raster_IPRC8.5
+
+plot(final_raster_IPRC8.5)
+```
+###save
+```{r}
+setwd(path.out.specific)
+terra::writeRaster(final_raster_IPRC8.5, paste0(spname,"_IPRC8.5", "_local", "_final_ensemble_raster_local.img"),  overwrite = TRUE)
+```
+Average
+
+```{r}
+maxValue(final_raster_NCAR8.5)
+minValue(final_raster_NCAR8.5)
+```
+
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(final_raster_NCAR8.5))) {
+    m1 <- final_raster_NCAR8.5[[i]] # get a prob map
+    m2 <- 1/maxValue(final_raster_NCAR8.5[[i]]) * final_raster_NCAR8.5[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(final_raster_NCAR8.5[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  final_raster_NCAR8.5 <- stack(layers)
+  final_raster_NCAR8.5
+```
+```{r}
+maxValue(final_raster_NCAR8.5)
+minValue(final_raster_NCAR8.5)
+```
+
+
+```{r}
+maxValue(final_raster_IPRC8.5)
+minValue(final_raster_IPRC8.5)
+```
+
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(final_raster_IPRC8.5))) {
+    m1 <- final_raster_IPRC8.5[[i]] # get a prob map
+    m2 <- 1/maxValue(final_raster_IPRC8.5[[i]]) * final_raster_IPRC8.5[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(final_raster_IPRC8.5[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  final_raster_IPRC8.5 <- stack(layers)
+  final_raster_IPRC8.5
+```
+```{r}
+maxValue(final_raster_IPRC8.5)
+minValue(final_raster_IPRC8.5)
+```
+taking the average of NCAR and IPRC
+```{r}
+combined <- raster::stack(final_raster_NCAR8.5, final_raster_IPRC8.5)
+combined <- mean(combined)
+combined
+```
+```{r}
+plot(combined)
+```
+
+
+
+
