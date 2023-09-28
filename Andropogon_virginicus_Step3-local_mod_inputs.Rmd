@@ -1,0 +1,1230 @@
+---
+title: "Andropogon virginicus - Preparing local Model Inputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+
+```{r}
+starttime <- Sys.time()
+```
+# Name of Species being modelled
+```{r}
+spname <- "Andropogon_virginicus"
+```
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "tidyr", "ggplot2", "raster",  "sf", "sp", "maptools", "CoordinateCleaner",  "spThin", "modeest", "beepr")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+  path.in.general <- paste(path.root, "/input", sep = "")
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out <- paste(path.root, "/output/", spname, sep = "") 
+  path.preds <- paste(path.root, "/input/yearly_and_seasonal_projections_HI",  sep = "")
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+
+
+####  Get the Occurrence Data
+```{r}
+pres <- read.csv(paste(path.in.general, "/occurrence_data/", spname, ".csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+head(pres) # look at data
+```
+```{r}
+pres$scientificName <- gsub(spname, 1, pres$scientificName)
+head(pres, 2)
+```
+
+How many 1s (presences)  do we have?
+```{r}
+nrow(pres)
+```
+
+### Clean Coordinates
+
+```{r}
+flagged <- clean_coordinates(x = pres, species = "scientificName", lon = "decimalLongitude", lat = "decimalLatitude", 
+                             tests = c( "centroids","equal", "seas", "zeros"))
+summary(flagged)
+```
+```{r}
+table(flagged$.summary)
+```
+```{r}
+pres <- subset(flagged, flagged$.summary == TRUE)
+dim(pres)
+```
+#### Converting to a spatial object with a geometry field
+```{r}
+pres <- st_as_sf(pres, coords = c("decimalLongitude", "decimalLatitude"), crs = prj.wgs84, remove = FALSE)
+class(pres)
+head(pres, 4)
+```
+
+#### Subset into local versus local dataset
+
+```{r}
+setwd(path.in.general)
+#This polygon is only for the main hawaiian islands
+islandpolys <- st_read("Coastline.shp")
+```
+```{r}
+local.pres <- st_join(pres, islandpolys, join = st_intersects, left = FALSE ) %>% dplyr::select(scientificName, decimalLongitude, decimalLatitude, isle,	geometry)
+unique(local.pres$isle)
+dim(local.pres)
+head(local.pres)
+```
+#### Check:
+
+```{r}
+plot(st_geometry(islandpolys), border = "darkgrey", axes = F)
+plot(st_geometry(local.pres),  add= T, col = "red", pch = 16)
+```
+```{r}
+worldmap <- borders("world", colour = "white", fill = "gray75")
+map_world <- ggplot() +
+                worldmap +
+                geom_point(local.pres, mapping = aes(x = decimalLongitude, y = decimalLatitude), col = "red")
+map_world
+```
+
+
+#### Spatial thinning (takes a long time)
+
+
+```{r}
+kms_to_thin_by <- 8
+```
+
+```{r}
+output <- spThin::thin(local.pres, lat.col = 'decimalLatitude', long.col = 'decimalLongitude', spec.col = "scientificName", thin.par = (kms_to_thin_by ), reps = 3, locs.thinned.list.return = TRUE, write.files = FALSE, verbose = TRUE)
+```
+
+Since spThin did 100 iterations, there are 100 different variations of
+how it thinned the occurrence localities. As there is a stochastic
+element in the algorithm, some iterations may include more localities
+than the others, and we need to make sure we maximize the number of
+localities we proceed with.
+
+```{r}
+# find the iteration that returns the max number of occurrences
+maxThin <- which(sapply(output, nrow) == max(sapply(output, nrow)))
+# if there's more than one max, pick the first one
+maxThin <- output[[ifelse(length(maxThin) > 1, maxThin[1], maxThin)]]  
+# subset occs to match only thinned occs
+local.pres <- local.pres[as.numeric(rownames(maxThin)),]  
+
+```
+
+
+save the raw points that were used
+```{r}
+setwd(path.in.specific)
+write.csv(local.pres, paste0(spname, "_occurrences_used_local.csv"), row.names = FALSE)
+```
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- pres <- read.csv(paste(spname, "_occurrences_used_local.csv", sep = ""), header=T, sep=',', stringsAsFactors=F) -->
+<!-- ``` -->
+```{r}
+nrow(local.pres)
+```
+
+
+
+# local MODEL
+
+#### making a bounding box (with  buffered points)
+
+```{r}
+#buffer = 3500000
+
+#local.bufbbox <- extent(min(local.pres$decimalLongitude) - (0.00833 * buffer), max(local.pres$decimalLongitude) + (0.00833 * buffer),
+#               min(local.pres$decimalLatitude) - (0.00833 * buffer), max(local.pres$decimalLatitude) + (0.00833 * buffer))
+
+#making a bbox of Hawaii, excuding Niihau and the NWHI
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+local.bufbbox
+```
+```{r}
+local.bufbboxSF <- sf::st_as_sfc(st_bbox(local.bufbbox, crs = prj.wgs84))
+local.bufbboxSF
+
+plot(st_geometry(local.bufbboxSF), axes = T)
+plot(st_geometry(local.pres), add= T, col = "darkgreen")
+```
+<!-- #### Making a SF polygon of the buffered points -->
+
+<!-- ```{r} -->
+<!-- #buffering each point by 50km (remember, each km is approx .0083 degrees) -->
+<!-- local.bufptSF <- sf::st_buffer(local.pres, dist = (0.00833 * buffer)) -->
+<!-- #local.bufptSF <- islandpolys -->
+
+<!-- plot(st_geometry(local.bufbboxSF), axes = T) -->
+<!-- plot(st_geometry(local.bufptSF), add= T, col = "darkgreen") -->
+<!-- plot(st_geometry(local.pres),add= T, axes = T, col = "gray") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #union-ing the points into a single polygon -->
+<!-- local.bufptSF <- sf::st_union(local.bufptSF) -->
+<!-- plot(st_geometry(local.bufptSF), axes = T) -->
+<!-- ``` -->
+#### Making a SF polygon of the main islands
+```{r}
+local.islandpolySF <- sf::st_union(islandpolys)
+local.islandpolySF
+```
+
+
+#### Saving
+(This will be domain where the statistical model will be projected later on)
+
+```{r}
+setwd(path.in.specific)
+#save("local.bufptSF", file = paste0(spname, "_local.bufptSF.RData"))
+save("local.bufbboxSF", file = paste0(spname, "_local.bufbbox.RData"))
+save("local.islandpolySF", file = paste0(spname, "_local.islandpolySF.RData"))
+```
+
+
+## Building a local "Fishnet"
+
+This creates a dataframe of gridcells to associate with presence points, so that each presence point can be assigned a FNETID
+
+#### converting buffered pt polygon to raster using a template raster file
+```{r}
+setwd(path.in.general)
+template1 <- raster("gpw-v4-land-water-area-rev11_landareakm_2pt5_min_tif/gpw_v4_land_water_area_rev11_landareakm_2pt5_min.tif")
+template1
+```
+
+Let’s make sure the projections are the same:
+```{r}
+st_crs(template1)$proj4string == st_crs(local.bufbboxSF)$proj4string
+```
+```{r}
+st_crs(local.bufbboxSF)$proj4string == st_crs(local.islandpolySF)$proj4string
+```
+```{r}
+local.bufbboxSP <- as_Spatial(local.bufbboxSF) # converts to spatial polygon class
+local.bufboxR <- raster::crop(raster::rasterize(local.bufbboxSP, template1), local.bufbboxSP) # cropping to bbox
+local.bufboxR
+```
+```{r}
+plot(local.bufboxR, legend = T)
+```
+#### Save
+```{r}
+setwd(path.in.general)
+writeRaster(local.bufboxR,"local.bboxR.img", format = "HFA", overwrite = TRUE)
+```
+
+```{r}
+local.islandpolySP <- as_Spatial(local.islandpolySF) # converts to spatial polygon class
+local.islandpolySP
+
+local.islandpolyR <- crop(rasterize(local.islandpolySP, template1), local.islandpolySP) # cropping to bbox
+local.islandpolyR
+
+plot(local.islandpolyR, legend = T)
+```
+#### Save
+```{r}
+setwd(path.in.specific)
+writeRaster(local.islandpolyR, paste0(spname, "_local.islandpolyR.img"), format = "HFA", overwrite = TRUE)
+```
+
+#### making FISHNET (assigning FNETID to each cell)
+
+a dataframe version of the raster file for the buffered bounding box
+
+```{r}
+f1 <- sp::coordinates(local.bufboxR)
+f2 <- cellFromXY(local.bufboxR, f1)
+f3 <- as.data.frame(cbind(f1, f2))
+
+# some dataframe clean-up
+names(f3)[1:3] <- c("decimalLongitude", "decimalLatitude", "FNETID") # assign names
+f3 <- f3[c("FNETID", "decimalLongitude", "decimalLatitude")] # reorder
+class(f3)
+head(f3)
+```
+
+##### double checks:
+
+f2 value should eq. ncell in glboal.bufboxR below
+```{r}
+tail(f3, 1)
+```
+```{r}
+ncell(local.bufboxR) # should eq. f2 value above
+```
+#### Set as spatial object
+
+```{r}
+local.fnetSF <- st_as_sf(f3, coords = c("decimalLongitude", "decimalLatitude"), crs = prj.wgs84, remove = F) # remove=F retains input x,y)
+class(local.fnetSF)
+head(local.fnetSF, 2) # examine
+```
+```{r}
+setwd(path.in.specific)
+#save
+local.fnetDF <- st_drop_geometry(local.fnetSF) # build dataframe -  redundant, but whatever
+write.csv(local.fnetDF, paste0(spname, "_local.fnetDF.csv"), row.names = FALSE)
+head(local.fnetDF, 2)
+```
+
+### Create a Raster file of the FNET 
+```{r eval=FALSE, include=FALSE}
+local.fnetSP <- as_Spatial(local.fnetSF) # converts to spatial polygon class
+local.fnetR <- crop(rasterize(local.fnetSP, template1), local.fnetSP)
+local.fnetR
+```
+
+```{r eval=FALSE, include=FALSE}
+setwd(path.in.general)
+#save
+writeRaster(local.fnetR, "local.fnetR.img", format = "HFA", overwrite = TRUE)
+```
+
+```{r}
+setwd(path.in.general)
+local.fnetR <- raster("local.fnetR.img")
+local.fnetR
+```
+
+### Extract fishnet location points for each presence point
+#### convert species presences x,y to spatial coordinate
+
+```{r}
+local.presDF <- st_drop_geometry(local.pres) # build dataframe -  redundant, but whatever
+class(local.presDF)
+```
+
+```{r}
+tru.xy <- local.presDF[c("decimalLongitude", "decimalLatitude")]  # get x,y of species presences
+p1 <- sp::coordinates(tru.xy)
+head(p1)
+```
+### Get FNETIDs that have spp presences
+
+```{r}
+#pres.fnetid <- cellFromXY(local.bufboxR, p1)
+pres.fnetid <- cellFromXY(local.islandpolyR, p1) # FNETID of presence from pt-buffered poly
+length(pres.fnetid)
+head(pres.fnetid, 25) # FNETID numbers associated with species x,y
+```
+#### Check:
+
+Make sure the species presences = the number of cells in original data
+```{r}
+length(pres.fnetid) == nrow(local.presDF)
+```
+### create species dataframe with FNETIDs
+ (so that FNETIDs are linked to species presences)
+
+```{r}
+local.presFNET <- cbind(pres.fnetid, local.presDF) # add fishnet ID to your original dataframe
+names(local.presFNET)[1] <- "FNETID" # name change 
+head(local.presFNET, 5) # examine
+```
+
+### extract FNETID of modelling frame
+
+```{r}
+islandpoly.fnetid <- raster::extract(local.islandpolyR, local.fnetDF[c("decimalLongitude", "decimalLatitude")])
+islandpoly.fnetid[1:6] # examine: NA
+```
+should be just NA and 1s
+```{r}
+unique(islandpoly.fnetid)
+```
+
+### create modelling dataframe with FNETIDs
+
+```{r}
+local.islandpolyFNET <- cbind(local.fnetDF, islandpoly.fnetid) # bind modelling frame w/FISHNET
+head(local.islandpolyFNET, 2) # examine
+```
+
+##### Check...
+
+```{r}
+table(local.islandpolyFNET$islandpoly.fnetid)[[1]] # number of FNETIDs
+```
+```{r}
+unique(local.islandpolyFNET$islandpoly.fnetid)
+```
+
+
+```{r}
+length(which(is.na(local.islandpolyFNET$islandpoly.fnetid))) # NAS
+```
+latter # should be higher than former, indicating that there are plenty of cells within the buffer point modelling frame that don't have presence points....
+
+```{r}
+plot(local.bufboxR, legend = T)
+plot(local.islandpolyR, col = "red", add = T, legend = F, main = "Points in modelling frame")  # main plot
+points(local.presFNET$decimalLongitude, local.presFNET$decimalLatitude, pch = 20, col = "black") # add spp locations
+```
+### MERGE SPP LOCATION and MODELLING FRAME by FISHNET ID’S
+
+```{r}
+# examine dataframes
+head(local.fnetDF, 2) # fishnet dataframe
+```
+
+```{r}
+head(local.islandpolyFNET, 2) # modelling dataframe
+```
+```{r}
+table(local.islandpolyFNET$islandpoly.fnetid)[[1]] # number of FNETIDs 
+```
+```{r}
+head(local.presFNET, 2) # spp locations dataframe
+```
+```{r}
+dim(local.presFNET)[1] # number spp locations
+```
+```{r}
+# begin merge: NOTE merge by=c("sort vars") & all.y=T options
+m1 <- merge(local.fnetDF, local.islandpolyFNET, by = c("FNETID", "decimalLongitude", "decimalLatitude" ), all.y = T)
+head(m1, 2) # examine: FNETID no longer ranked but not to worry ...
+```
+```{r}
+nrow(m1)
+```
+```{r}
+unique(m1$islandpoly.fnetid)
+```
+
+```{r}
+local.indexFNET <- merge(m1, local.presFNET, by = c("FNETID",  "decimalLongitude", "decimalLatitude"), all = T) # final merge:assign DF name
+names(local.indexFNET)[4] <- "in.modFR" # change some names
+names(local.indexFNET) # examine names
+```
+```{r}
+head(local.indexFNET, 2) # final 
+```
+```{r}
+unique(local.indexFNET$Species)
+```
+
+#### Checking…
+```{r}
+length(local.indexFNET$FNETID) # does it match w/above ??
+```
+```{r}
+table(local.indexFNET$in.modFR) # does it match w/above ??
+```
+```{r}
+table(local.indexFNET$scientificName)[[1]] # does it match w/above ??
+```
+```{r}
+names(local.indexFNET) # names make sense ?? yes !
+```
+
+#### Save final fnet index dataframe
+
+```{r}
+setwd(path.in.specific)
+save(local.indexFNET, file = paste0(spname, "_local.indexFNET.RData"))
+  
+# examine the fishnet
+head(local.indexFNET)
+```
+```{r}
+unique(local.indexFNET$in.modFR)
+```
+
+
+### EXTRACT PSEUDO-ABSENCES [X,Y]’s
+### create conditional vectors: FNETIDs by spp locations & in modelling frame
+```{r}
+p1 <- local.indexFNET
+p2.spp <- subset(p1$FNETID, p1$scientificName == 1) # FNETIDs of spp locations
+p2.modFR <- subset(p1$FNETID, p1$in.modFR == 1) # FNETIDs in modelling frame
+length(p2.spp) # should equal N of spp locations
+```
+```{r}
+length(p2.modFR)
+```
+#### dropping presence cells
+
+(leaving possible pseudo-absence cell FNETIDs)
+
+```{r}
+p3 <- p1[!p1$FNETID %in% p2.spp, ] # background from fishnet
+p4 <- p1[!p1$FNETID %in% p2.spp & p1$FNETID %in% p2.modFR, ] # background from modelling frame
+pseu.islandpoly <- p4 # new name to dataframe: this dataframe used from now on
+```
+
+```{r}
+head(pseu.islandpoly, 2) # dataframe from which samples drawn
+```
+#### Drawing Pseudo-Absences
+
+```{r}
+#   N=2*No. pres
+set.seed(1234) # set seed to ensure repeatability
+pseu.srs2 <- pseu.islandpoly[sample(1:nrow(pseu.islandpoly), 3 * table(p1$scientificName)[[1]], replace = T), ]
+pseu.srs2$scientificName <- 0  # assign 0 to pseu.abs  
+pseu.srs2$in.modFR <- 1  # assign 1 to in.modFR
+dim(pseu.srs2) # dim[1] should equal N spp locations, dim[2] the No. variables
+```
+```{r}
+head(pseu.srs2, 2) # examine
+```
+
+### MERGing PSEUDO-ABSENCES WITH TRUE PRESENCE DATAFRAME
+
+```{r}
+head(local.presFNET, 2)
+```
+```{r}
+head(pseu.srs2, 2)# examine; both MUST have FNETID
+```
+
+#### merge with true presences
+
+```{r}
+local.PPsA <- merge(local.presFNET, pseu.srs2, by = c("FNETID", "scientificName", "decimalLongitude", "decimalLatitude"), all = T) # merge
+local.PPsA$in.modFR <- NULL # drop in.modFR index no longer needed
+dim(local.PPsA) # examine
+```
+```{r}
+head(local.PPsA, 2) 
+```
+```{r}
+table(local.PPsA$scientificName)
+```
+
+### create common x,y from tru pres and pseudo-abs x,y’s
+```{r}
+# create new vars wgs_x & wgs_y; used later in raster stack extraction
+local.PPsA$tr.Lon <- ifelse(local.PPsA$scientificName == 0, local.PPsA$decimalLongitude, local.PPsA$decimalLongitude)
+local.PPsA$tr.Lat <- ifelse(local.PPsA$scientificName == 0, local.PPsA$decimalLatitude, local.PPsA$decimalLatitude) 
+local.PPsA[352:355, ] # examine a subset
+```
+
+
+
+## Getting rid of Pseudoabs that are very close to Pres
+
+```{r}
+local.PPsASF <- st_as_sf(local.PPsA, coords = c("tr.Lon", "tr.Lat"), crs = prj.wgs84, remove = FALSE)
+class(local.PPsASF)
+```
+```{r}
+pres <- subset(local.PPsASF, local.PPsASF$scientificName ==1)
+pseuabs <- subset(local.PPsASF, local.PPsASF$scientificName ==0)
+```
+
+#### Making buffered points
+```{r}
+pres.bufptSF <- st_buffer(pres, dist = 8000)
+#union-ing the points into a single polygon
+pres.bufptSF <- st_union(pres.bufptSF) %>% st_make_valid() %>% st_as_sf 
+plot(pres.bufptSF)
+```
+```{r}
+class(pseuabs)
+```
+```{r}
+class(pres.bufptSF)
+```
+
+```{r}
+discards <- st_join(pseuabs, pres.bufptSF, join = st_intersects, left = FALSE )
+
+#%>% dplyr::select(FNETID, scientificName, decimalLongitude, decimalLatitude,	geometry)
+
+discards
+```
+
+
+
+```{r}
+discards <- as.data.frame(discards) # build dataframe -  redundant, but whatever
+unique(discards$scientificName)
+```
+
+```{r}
+local.PPsA_temp <- merge(local.PPsA, discards, by = c("FNETID","scientificName", "decimalLongitude", "decimalLatitude"), all.x = TRUE)
+local.PPsA_temp <- subset(local.PPsA_temp, is.na(local.PPsA_temp$tr.Lon.y)) %>% dplyr::select(FNETID, scientificName, decimalLongitude, decimalLatitude, tr.Lon.x, tr.Lat.x)
+local.PPsA_temp
+```
+```{r}
+local.PPsA_temp <- local.PPsA_temp %>% dplyr::distinct(FNETID, .keep_all = TRUE)
+local.PPsA_temp
+```
+
+```{r}
+table(local.PPsA_temp$scientificName)
+```
+```{r}
+local.PPsADF <- local.PPsA_temp
+```
+
+
+# saving
+
+```{r}
+#local.PPsADF <- st_drop_geometry(local.PPsASF) # build dataframe
+setwd(path.in.specific)
+save("local.PPsADF", file = paste0(spname, "_local.PPsADF.RData"))
+head(local.PPsADF, 2) # examine
+```
+
+<!-- ## Point shapefile with geometry in R -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- save("local.PPsASF", file = paste0(spname, "_local.PPsASF.RData")) -->
+<!-- head(local.PPsASF, 2) # examine -->
+<!-- ``` -->
+
+<!-- Export as a point shapefile in ESRI format -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) # output path -->
+<!-- st_write(local.PPsASF, dsn = ".", layer = paste0(spname, "_local_PPsASF"), driver = "ESRI Shapefile", delete_layer = T, delete_dsn = T) # output shapefile -->
+<!-- ``` -->
+
+## Get local Environmental Data
+
+Using WorldClim
+(<a href="http://www.worldclim.org/" class="uri">http://www.worldclim.org/</a>)
+bioclimatic dataset at resolution of 2.5 arcmin.
+
+```{r}
+# get WorldClim bioclimatic variable rasters
+#envs <- raster::getData(name = "worldclim", var = "bio", res = 2.5, lat = , lon = )
+#envs
+```
+```{r}
+# get WorldClim bioclimatic variable rasters
+#elev <- raster::getData(name = "worldclim", var = "alt", res = 2.5, lat = , lon = )
+#elev
+```
+```{r}
+#combined <- raster::stack(envs, elev)
+#names(combined)
+```
+
+
+<!-- ```{r} -->
+<!-- library(terra) -->
+<!-- setwd(path.in.general) -->
+<!-- #baseline <- list.files(pattern = "new_baseline_bioclims.tif") # list of .img files; $ strips extra -->
+<!-- #baseline_stack <- stack(baseline)# examine -->
+<!-- baseline <- terra::rast("new_baseline_bioclims.tif") -->
+<!-- baseline -->
+<!-- ``` -->
+
+
+<!-- <!-- ```{r} --> -->
+<!-- <!-- setwd(path.in.general) --> -->
+<!-- <!-- #baseline <- list.files(pattern = "new_baseline_bioclims.tif") # list of .img files; $ strips extra --> -->
+<!-- <!-- #baseline_stack <- stack(baseline)# examine --> -->
+<!-- <!-- elevation <- terra::rast("elevhi.tif") --> -->
+<!-- <!-- elevation <- terra::project(elevation, baseline) --> -->
+<!-- <!-- elevation --> -->
+<!-- <!-- ``` --> -->
+<!-- <!-- ```{r} --> -->
+<!-- <!-- seasonal <- intersect(list.files(path = path.in.general, pattern = "Season_", full.names = T), list.files(path = path.in.general, pattern = "baseline", full.names = T)) --> -->
+<!-- <!-- seasonal --> -->
+<!-- <!-- seasonal_stack <- terra::rast(seasonal)# examine --> -->
+<!-- <!-- seasonal_stack --> -->
+<!-- <!-- ``` --> -->
+
+<!-- ```{r} -->
+<!-- baseline_stack <- baseline -->
+<!-- baseline_stack -->
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- names(baseline_stack) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19" ) -->
+<!-- names(baseline_stack) -->
+
+<!-- baseline_stack -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- baseline_stack <- terra::subset(baseline_stack, c(1,12,15)) -->
+<!-- baseline_stack -->
+<!-- ``` -->
+
+<!-- Let’s make sure the projections are the same: -->
+<!-- ```{r} -->
+<!-- st_crs(baseline_stack)$proj4string == st_crs(local.bufbboxSF)$proj4string -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- st_crs(local.bufbboxSF)$proj4string == st_crs(local.islandpolySF)$proj4string -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.general) -->
+<!-- save(baseline_stack, file = "HI_bioclimstack.RData") # save .RData -->
+<!-- terra::writeRaster(baseline_stack, "HI_bioclimstack.tif", overwrite = T) # save as .img file -->
+<!-- ``` -->
+
+
+
+```{r}
+setwd(path.in.general)
+bioclim <- terra::rast("HI_bioclimstack.tif")
+bioclim
+```
+
+
+
+### Extract predictor variables for a bioclim vars files using the presence:absence [X,Y]’s
+
+##### First, get the presence-absence data
+
+```{r}
+pres.abs <- local.PPsADF
+head(pres.abs, 2)
+```
+```{r}
+table(pres.abs$scientificName) # examine frequencies
+```
+```{r}
+t1 <- raster::extract(bioclim, pres.abs[, c("decimalLongitude", "decimalLatitude")]) # extract values from raster stack
+head(t1, 2) # examine extracted matrix
+```
+
+
+
+### Create a new dataframe by binding the extracted predictor variable values to the pres abs dataframe
+
+```{r}
+local.trTOPO <- cbind(pres.abs, t1) # bind to train dataframe
+  head(local.trTOPO, 5) # examine training data frame
+```
+
+```{r}
+dim(t1)
+```
+how many NA's
+```{r}
+# examine extractions
+subset(local.trTOPO, is.na(as.character(local.trTOPO$bio1)))
+```
+
+```{r}
+local.trTOPOSF <- st_as_sf(local.trTOPO, coords = c("decimalLongitude", "decimalLatitude"), crs = prj.wgs84, remove = FALSE)
+class(local.trTOPOSF)
+```
+
+```{r}
+zeros <- subset(local.trTOPOSF, scientificName == 0)
+ones <- subset(local.trTOPOSF, scientificName == 1)
+
+
+plot(st_geometry(zeros), axes = T,col = "blue", pch =19, cex = .5)
+plot(st_geometry(ones),  add = T, col = "red",  pch =19, cex =.5)
+```
+```{r}
+nrow(zeros)
+```
+```{r}
+nrow(ones)
+```
+
+some cleaning...
+
+```{r}
+local.trTOPO <- local.trTOPO %>% dplyr::select(-one_of("isle.x", "isle.y"))
+local.trTOPO <- na.omit(local.trTOPO)
+local.trTOPO
+```
+
+
+##### Saving
+```{r}
+setwd(path.in.specific)
+write.csv(local.trTOPO, file = paste0(spname, "_local_trTOPO.csv"), row.names = F) # save .csv
+save(local.trTOPO, file = "_local.trTOPO.RData") # save .RData
+#st_write(local.trTOPOSF, dsn = ".", layer = paste0(spname, "_local.trTOPOSF"), driver = "ESRI Shapefile", delete_layer = T, delete_dsn = T) # output shapefile
+```
+
+## EXAMINE ENVIRONMENTAL RELATIONSHIPS
+
+
+```{r}
+setwd(path.in.specific)
+tr.data <- read.csv( file = paste0(spname, "_local_trTOPO.csv"))
+
+dim(tr.data)
+```
+
+#### Description of World BIOCLIM environmental variables
+
+    BIO1 = Annual Mean Temperature
+    BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp))
+    BIO3 = Isothermality (BIO2/BIO7) (×100)
+    BIO4 = Temperature Seasonality (standard deviation ×100)
+    BIO5 = Max Temperature of Warmest Month
+    BIO6 = Min Temperature of Coldest Month
+    BIO7 = Temperature Annual Range (BIO5-BIO6)
+    BIO8 = Mean Temperature of Wettest Quarter
+    BIO9 = Mean Temperature of Driest Quarter
+    BIO10 = Mean Temperature of Warmest Quarter
+    BIO11 = Mean Temperature of Coldest Quarter
+    
+    BIO12 = Annual Precipitation
+    BIO13 = Precipitation of Wettest Month
+    BIO14 = Precipitation of Driest Month
+    BIO15 = Precipitation Seasonality (Coefficient of Variation)
+    BIO16 = Precipitation of Wettest Quarter
+    BIO17 = Precipitation of Driest Quarter
+    BIO18 = Precipitation of Warmest Quarter
+    BIO19 = Precipitation of Coldest Quarter
+    
+    alt = Elevation
+    
+    BIO21 = drySeason_precip_baseline
+    BIO22 = drySeason_tmax_baseline
+    BIO23 = drySeason_tmean_baseline
+    BIO24 = drySeason_tmin_baseline
+    BIO25 = wetSeason_precip_baseline
+    BIO26 = wetSeason_tmax_baseline
+    BIO27 = wetSeason_tmean_baseline
+    BIO28 = wetSeason_tmin_baseline  
+    
+
+
+
+
+<!-- ```{r} -->
+<!-- occurrences <- c("FNETID", "scientificName", "tr.Lon", "tr.Lat") -->
+
+<!-- tempvars <- c('bio1', 'bio2', 'bio3', 'bio4', 'bio5', 'bio6', 'bio7', 'bio8', 'bio9', 'bio10', 'bio11', 'bio22', 'bio23', 'bio24', 'bio26', 'bio27', 'bio28') -->
+<!-- precipvars <- c('bio12', 'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19', 'alt', 'bio21', 'bio25') -->
+
+<!-- allpreds <- c(tempvars, precipvars) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tr.temp <- cbind(tr.data %>% dplyr::select(all_of(occurrences)), tr.data %>% dplyr::select(all_of(tempvars))) -->
+<!-- tr.temp$pred_type <- "temp" -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- tr.prec <- cbind(tr.data %>% dplyr::select(all_of(occurrences)), tr.data %>% dplyr::select(all_of(precipvars))) -->
+<!-- tr.prec$pred_type <- "precip" -->
+<!-- ``` -->
+<!-- Creating an empty dataframe to merge together -->
+
+<!-- ```{r} -->
+<!-- tr.DFgrouped <-  setNames(data.frame(matrix(ncol = length(allpreds), nrow = 0)), allpreds) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tr.DFgrouped <- dplyr::bind_rows(mutate_all(tr.DFgrouped, as.character), mutate_all(tr.temp, as.character), mutate_all(tr.prec, as.character)) -->
+<!-- head(tr.DFgrouped) -->
+<!-- ``` -->
+
+### CORRELATIONS AMONG ALL PREDICTORS
+
+
+```{r}
+tr.data
+```
+
+```{r}
+occurrences <- c("FNETID", "scientificName", "decimalLongitude", "decimalLatitude")
+
+allpreds <- c('bio1', 'bio12', 'bio15')
+```
+
+```{r}
+tr.data <- cbind(tr.data %>% dplyr::select(all_of(occurrences)), tr.data %>% dplyr::select(all_of(allpreds)))
+tr.data$pred_type <- "allpreds"
+```
+
+### CORRELATIONS AMONG ALL PREDICTORS
+```{r}
+tr.data
+```
+
+```{r}
+# numeric correlations
+#Using spearman because it has no assumption of normality
+  cut.point <- 0.7 # set cutpoint for correlation
+  c1 <- cor(tr.data[, c(5:7)], use = "pairwise.complete.obs", method = "spearman") # est. correlation
+```
+```{r}
+c2 <- subset(c1 > cut.point | c1 < -cut.point) # matrix of cor>cutpoint
+c2 # examine; FALSE indicates cor<cutpoint 
+```
+
+START MODIFIED panel.cor CORRELATION FUNCTION
+```{r}
+#   determine correlations among predictor variables: modified from 
+#   http://addictedtor.free.fr/graphiques/graphcode.php?graph=137
+panel.cor <- function(x, y, digits=2, prefix="", cex.cor) 
+  { usr <- par("usr"); on.exit(par(usr)) 
+    par(usr = c(0, 1, 0, 1)) 
+    r <- abs(cor(x, y, use = "pairwise.complete.obs")) 
+    txt <- format(c(r, 0.123456789), digits=digits)[1] 
+    txt <- paste(prefix, txt, sep="") 
+    if(missing(cex.cor)) cex <- 0.8/strwidth(txt) 
+
+    test <- cor.test(x,y) 
+    # borrowed from printCoefmat
+    Signif <- symnum(test$p.value, corr = FALSE, na = FALSE, 
+                  cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+                  symbols = c("***", "**", "*", ".", " ")) 
+
+    text(0.5, 0.5, txt, cex = cex * r)
+    text(.8, .8, Signif, cex=cex, col=2) 
+}
+# END MODIFIED panel.cor CORRELATION FUNCTION
+```
+
+### CORRELATIONS BETWEEN TEMPERATURE PREDICTORS
+```{r}
+# numeric correlations
+#Using spearman because it has no assumption of normality
+cut.point <- 0.7 # set cutpoint for correlation
+c1 <- cor(tr.data[, c(5:(ncol(tr.data)-1))], use = "pairwise.complete.obs",method = "spearman") # est. correlation
+c2 <- subset(c1 > cut.point | c1 < -cut.point) # matrix of cor>cutpoint
+```
+```{r}
+# plot correlations using modified panel.cor function
+  pairs(tr.data[, c(5:(ncol(tr.data)-1))], lower.panel = panel.smooth, 
+    upper.panel = panel.cor, main = "All Variables")
+```
+START VARIABLE IMPORTANCE AMONG TEMPERATURE PREDICTORS
+Modified from: Niklaus E. Zimmermann, WSL / ETH Zurich
+```{r}
+#### START function variable importance
+varimp.glm <- function(tr.spp, tr.var, pres, pf, pl) {
+  tmp.mat <- matrix(ncol = 2, nrow = (pl - pf + 1))
+  for (i in pf:pl) {
+    # option: linear+quadratic; linear only
+    tmp <- glm(tr.spp[, pres] ~ tr.var[, i] + I((tr.var[, i])^2), na.action = na.omit, 
+      family = binomial)
+    # linear only glm
+    #tmp <- glm(tr.spp[, pres] ~ tr.var[, i], na.action = na.omit, family = binomial)
+    tmp.mat[(i - pf + 1), 1] <- tmp$aic
+    tmp.mat[(i - pf + 1), 2] <- (1 - (tmp$deviance/tmp$null.deviance))
+    }
+  return(tmp.mat)
+  } 
+#### END function variable importance
+```
+
+```{r}
+# estimate VIP values => AIC & Adj deviance
+  tr.vip <- tr.data[, c(2, 5:(ncol(tr.data)-1))] # keep only P/A & predictors
+  pres <- 1 # column for presence:absence
+  v.start <- 2 # column start predictor variables
+  v.stop <- ncol(tr.vip) # last column predictor variables
+  v.num <- v.stop - 1 # number predictor variables
+  dev.fit <- varimp.glm(tr.vip, tr.vip, pres, v.start, v.stop) # call VIP function
+  dev.fit # output matrix; col=1 AIC, col=2 Adj deviance
+```
+```{r}
+# built basic barplot if desired
+  d.max <- ceiling(signif(max(dev.fit[, 2]), 2) * 10)/10 # max of y-axis
+  ylim.r <- range(0, d.max) # range y-axis
+  x.labs <- names(tr.vip[2:v.stop]) # x-axis labels
+  barplot(dev.fit[, 2], col = "darkgreen", ylim = ylim.r, main = "tr.data VIPs", 
+    ylab = "adj.D2", names = x.labs) # barplot
+  abline(h = 0) # add horizontal line
+  abline(mean(dev.fit[, 2]), 0, lt = 3) # ref lines; dash=mean adj.dev 
+```
+
+```{r}
+keep <- c('bio1', 'bio12', 'bio15')
+tr.picked <- cbind(tr.data %>% dplyr::select(all_of(occurrences)), tr.data %>% dplyr::select(all_of(keep)))
+head(tr.picked)
+```
+```{r}
+par(mfrow = c(1, 3))
+boxplot(tr.picked[,length(tr.picked) - length(keep) ]~ tr.picked$scientificName, xlab = "Presence:Absence", 
+    ylab = keep[1])
+
+boxplot(tr.picked[,length(tr.picked) - length(keep) + 1 ] ~ tr.picked$scientificName, xlab = "Presence:Absence",
+    ylab = keep[2])
+
+boxplot(tr.picked[,length(tr.picked) - length(keep) + 2 ] ~ tr.picked$scientificName, xlab = "Presence:Absence",
+    ylab = keep[3])
+
+
+
+```
+
+```{r}
+tr.picked %>% 
+  pivot_longer(names_to = "covariate", values_to = "value", - (FNETID:decimalLatitude)) %>% 
+  ggplot() +
+  geom_density(aes(x = value, y = ..density.., color = factor(scientificName))) +
+
+  facet_wrap(~covariate, scales = "free") +
+  theme_minimal()
+```
+
+### Saving
+
+```{r}
+setwd(path.in.specific)
+save(keep, file = paste0( spname, "_list_picked_vars_local.RData")) # save .RData
+```
+
+```{r}
+setwd(path.in.specific)
+write.csv(tr.picked, file = paste0( spname, "_tr_local_pickedvars.csv"), row.names = F) # save .csv
+save(tr.picked, file = paste0( spname, "_tr_local_pickedvars.RData")) # save .RData
+
+tr_localSF <- st_as_sf(tr.picked, coords = c("decimalLongitude", "decimalLatitude"), crs = prj.wgs84, remove = FALSE)
+save(tr_localSF, file = paste0( spname, "_tr_localSF_pickedvars.RData")) # save .RData
+st_write(tr_localSF, dsn = ".", layer = paste0( spname, "_tr_localSF_pickedvars"), driver = "ESRI Shapefile", delete_layer = T, delete_dsn = T) #
+```
+
+```{r}
+setwd(path.in.specific)
+write.csv(tr.data, file = paste0( spname, "_tr_local_allvars.csv"), row.names = F) # save .csv
+save(tr.data, file = paste0( spname, "_tr_local_allvars.RData")) # save .RData
+
+tr_localSF <- st_as_sf(tr.data, coords = c("decimalLongitude", "decimalLatitude"), crs = prj.wgs84, remove = FALSE)
+save(tr_localSF, file = paste0( spname, "_tr_localSF_allvars.RData")) # save .RData
+st_write(tr_localSF, dsn = ".", layer = paste0( spname, "_tr_localSF_allvars"), driver = "ESRI Shapefile", delete_layer = T, delete_dsn = T) # 
+```
+```{r}
+nowtime <- Sys.time()
+elapsed = nowtime - starttime
+print(elapsed)
+```
+
+<!-- ```{r} -->
+<!-- # numeric correlations -->
+<!-- #Using spearman because it has no assumption of normality -->
+<!--   cut.point <- 0.7 # set cutpoint for correlation -->
+<!--   c1 <- cor(tr.data[, c(9:length(tr.data))], use = "pairwise.complete.obs", method = "spearman") # est. correlation -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- c2 <- subset(c1 > cut.point | c1 < -cut.point) # matrix of cor>cutpoint -->
+<!-- c2 # examine; FALSE indicates cor<cutpoint  -->
+<!-- ``` -->
+
+<!-- START MODIFIED panel.cor CORRELATION FUNCTION -->
+<!-- ```{r} -->
+<!-- #   determine correlations among predictor variables: modified from  -->
+<!-- #   http://addictedtor.free.fr/graphiques/graphcode.php?graph=137 -->
+<!-- panel.cor <- function(x, y, digits=2, prefix="", cex.cor)  -->
+<!--   { usr <- par("usr"); on.exit(par(usr))  -->
+<!--     par(usr = c(0, 1, 0, 1))  -->
+<!--     r <- abs(cor(x, y, use = "pairwise.complete.obs"))  -->
+<!--     txt <- format(c(r, 0.123456789), digits=digits)[1]  -->
+<!--     txt <- paste(prefix, txt, sep="")  -->
+<!--     if(missing(cex.cor)) cex <- 0.8/strwidth(txt)  -->
+
+<!--     test <- cor.test(x,y)  -->
+<!--     # borrowed from printCoefmat -->
+<!--     Signif <- symnum(test$p.value, corr = FALSE, na = FALSE,  -->
+<!--                   cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), -->
+<!--                   symbols = c("***", "**", "*", ".", " "))  -->
+
+<!--     text(0.5, 0.5, txt, cex = cex * r) -->
+<!--     text(.8, .8, Signif, cex=cex, col=2)  -->
+<!-- } -->
+<!-- # END MODIFIED panel.cor CORRELATION FUNCTION -->
+<!-- ``` -->
+
+<!-- ### CORRELATIONS BETWEEN TEMPERATURE PREDICTORS -->
+<!-- ```{r} -->
+<!-- # numeric correlations -->
+<!-- #Using spearman because it has no assumption of normality -->
+<!-- cut.point <- 0.7 # set cutpoint for correlation -->
+<!-- c1 <- cor(tr.temp[, c(5:(ncol(tr.temp)-1))], use = "pairwise.complete.obs",method = "spearman") # est. correlation -->
+<!-- c2 <- subset(c1 > cut.point | c1 < -cut.point) # matrix of cor>cutpoint -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- # plot correlations using modified panel.cor function -->
+<!--   pairs(tr.temp[, c(5:(ncol(tr.temp)-1))], lower.panel = panel.smooth,  -->
+<!--     upper.panel = panel.cor, main = "Temp Variables") -->
+<!-- ``` -->
+<!-- - if too small to read, try right click then save image as, and then look at it with your own photo viewer -->
+
+<!-- START VARIABLE IMPORTANCE AMONG TEMPERATURE PREDICTORS -->
+<!-- Modified from: Niklaus E. Zimmermann, WSL / ETH Zurich -->
+
+<!-- ```{r} -->
+<!-- #### START function variable importance -->
+<!-- varimp.glm <- function(tr.spp, tr.var, pres, pf, pl) { -->
+<!--   tmp.mat <- matrix(ncol = 2, nrow = (pl - pf + 1)) -->
+<!--   for (i in pf:pl) { -->
+<!--     # option: linear+quadratic; linear only -->
+<!--     tmp <- glm(tr.spp[, pres] ~ tr.var[, i] + I((tr.var[, i])^2), na.action = na.omit,  -->
+<!--       family = binomial) -->
+<!--     # linear only glm -->
+<!--     #tmp <- glm(tr.spp[, pres] ~ tr.var[, i], na.action = na.omit, family = binomial) -->
+<!--     tmp.mat[(i - pf + 1), 1] <- tmp$aic -->
+<!--     tmp.mat[(i - pf + 1), 2] <- (1 - (tmp$deviance/tmp$null.deviance)) -->
+<!--     } -->
+<!--   return(tmp.mat) -->
+<!--   }  -->
+<!-- #### END function variable importance -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # estimate VIP values => AIC & Adj deviance -->
+<!--   tr.vip <- tr.temp[, c(2, 5:(ncol(tr.temp)-1))] # keep only P/A & predictors -->
+<!--   pres <- 1 # column for presence:absence -->
+<!--   v.start <- 2 # column start predictor variables -->
+<!--   v.stop <- ncol(tr.vip) # last column predictor variables -->
+<!--   v.num <- v.stop - 1 # number predictor variables -->
+<!--   dev.fit <- varimp.glm(tr.vip, tr.vip, pres, v.start, v.stop) # call VIP function -->
+<!--   dev.fit # output matrix; col=1 AIC, col=2 Adj deviance -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- # built basic barplot if desired -->
+<!--   d.max <- ceiling(signif(max(dev.fit[, 2]), 2) * 10)/10 # max of y-axis -->
+<!--   ylim.r <- range(0, d.max) # range y-axis -->
+<!--   x.labs <- names(tr.vip[2:v.stop]) # x-axis labels -->
+<!--   barplot(dev.fit[, 2], col = "darkgreen", ylim = ylim.r, main = "temp VIPs",  -->
+<!--     ylab = "adj.D2", names = x.labs) # barplot -->
+<!--   abline(h = 0) # add horizontal line -->
+<!--   abline(mean(dev.fit[, 2]), 0, lt = 3) # ref lines; dash=mean adj.dev  -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- allpreds -->
+<!-- ``` -->
+
+<!-- ### CORRELATIONS BETWEEN PRECIPITATION PREDICTORS -->
+<!-- ```{r} -->
+<!-- # numeric correlations -->
+<!-- #Using spearman because it has no assumption of normality -->
+<!-- cut.point <- 0.7 # set cutpoint for correlation -->
+<!-- c1 <- cor(tr.prec[, c(5:(ncol(tr.prec)-1))], use = "pairwise.complete.obs",method = "spearman") # est. correlation -->
+<!-- c2 <- subset(c1 > cut.point | c1 < -cut.point) # matrix of cor>cutpoint -->
+<!-- c2 # examine; FALSE indicates cor<cutpoint  -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- # plot correlations using modified panel.cor function -->
+<!--   pairs(tr.prec[, c(5:(ncol(tr.prec)-1))], lower.panel = panel.smooth,  -->
+<!--     upper.panel = panel.cor, main = "Precip Variables") -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- # estimate VIP values => AIC & Adj deviance -->
+<!--   tr.vip <- tr.prec[, c(2, 5:(ncol(tr.prec)-1))] # keep only P/A & predictors -->
+<!--   pres <- 1 # column for presence:absence -->
+<!--   v.start <- 2 # column start predictor variables -->
+<!--   v.stop <- ncol(tr.vip) # last column predictor variables -->
+<!--   v.num <- v.stop - 1 # number predictor variables -->
+<!--   dev.fit <- varimp.glm(tr.vip, tr.vip, pres, v.start, v.stop) # call VIP function -->
+<!--   dev.fit # output matrix; col=1 AIC, col=2 Adj deviance -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- # built basic barplot if desired -->
+<!--   d.max <- ceiling(signif(max(dev.fit[, 2]), 2) * 10)/10 # max of y-axis -->
+<!--   ylim.r <- range(0, d.max) # range y-axis -->
+<!--   x.labs <- names(tr.vip[2:v.stop]) # x-axis labels -->
+<!--   barplot(dev.fit[, 2], col = "darkgreen", ylim = ylim.r, main = "precip VIPs",  -->
+<!--     ylab = "adj.D2", names = x.labs) # barplot -->
+<!--   abline(h = 0) # add horizontal line -->
+<!--   abline(mean(dev.fit[, 2]), 0, lt = 3) # ref lines; dash=mean adj.dev  -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- keep <- c("bio1", "bio8", "bio13","bio19", "bio25") -->
+<!-- tr.picked <- cbind(tr.data %>% dplyr::select(all_of(occurrences)), tr.data %>% dplyr::select(all_of(keep))) -->
+<!-- head(tr.picked) -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- par(mfrow = c(1, 7)) -->
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) ]~ tr.picked$scientificName, xlab = "Presence:Absence",  -->
+<!--     ylab = keep[1]) -->
+
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) + 1 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!--     ylab = keep[2]) -->
+
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) + 2 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!--     ylab = keep[3]) -->
+
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) + 3 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!--     ylab = keep[4]) -->
+
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) + 4 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!--     ylab = keep[5]) -->
+
+<!-- boxplot(tr.picked[,length(tr.picked) - length(keep) + 5 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!--     ylab = keep[6]) -->
+
+<!-- #boxplot(tr.picked[,length(tr.picked) - length(keep) + 6 ] ~ tr.picked$scientificName, xlab = "Presence:Absence", -->
+<!-- #    ylab = keep[7]) -->
+
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tr.picked %>%  -->
+<!--   pivot_longer(names_to = "covariate", values_to = "value", - (FNETID:tr.Lat)) %>%  -->
+<!--   ggplot() + -->
+<!--   geom_density(aes(x = value, y = ..density.., color = factor(scientificName))) + -->
+
+<!--   facet_wrap(~covariate, scales = "free") + -->
+<!--   theme_minimal() -->
+<!-- ``` -->
+
+
+
+<!-- ### Saving -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- save(keep, file = paste0( spname, "_list_picked_vars_local.RData")) # save .RData -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- write.csv(tr.picked, file = paste0( spname, "_tr_local_pickedvars.csv"), row.names = F) # save .csv -->
+<!-- save(tr.picked, file = paste0( spname, "_tr_local_pickedvars.RData")) # save .RData -->
+
+<!-- tr_localSF <- st_as_sf(tr.picked, coords = c("tr.Lon", "tr.Lat"), crs = prj.wgs84, remove = FALSE) -->
+<!-- save(tr_localSF, file = paste0( spname, "_tr_localSF_pickedvars.RData")) # save .RData -->
+<!-- st_write(tr_localSF, dsn = ".", layer = paste0( spname, "_tr_localSF_pickedvars"), driver = "ESRI Shapefile", delete_layer = T, delete_dsn = T) # -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- setwd(path.in.specific) -->
+<!-- write.csv(tr.data, file = paste0( spname, "_tr_local_allvars.csv"), row.names = F) # save .csv -->
+<!-- save(tr.data, file = paste0( spname, "_tr_local_allvars.RData")) # save .RData -->
+
+<!-- tr_localSF <- st_as_sf(tr.data, coords = c("tr.Lon", "tr.Lat"), crs = prj.wgs84, remove = FALSE) -->
+<!-- save(tr_localSF, file = paste0( spname, "_tr_localSF_allvars.RData")) # save .RData -->
+<!-- #st_write(tr_localSF, dsn = ".", layer = paste0( spname, "_tr_localSF_allvars"), driver = "ESRI #Shapefile", delete_layer = T, delete_dsn = T) #  -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- beep(sound = 2) -->
+<!-- beep(sound = 2) -->
+<!-- beep(sound = 8) -->
+<!-- beep(sound = 4) -->
+<!-- ``` -->

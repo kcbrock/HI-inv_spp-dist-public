@@ -1,0 +1,365 @@
+---
+title: "Andropogon_virginicus_Step2.2-globalmodeloutput"
+output: html_document
+date: "2023-09-03"
+---
+
+```{r}
+starttime <- Sys.time()
+```
+# Name of Species being modelled
+```{r}
+spname <- "Andropogon_virginicus"
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "terra", "sf", "knitr", "raster", "biomod2")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+
+  path.in.general <- paste(path.root, "/input", sep = "")
+  
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+  path.out.specific.ensemble.global <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_global", sep = "")
+  path.out.specific.ensemble.global.current.HIdata <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_current", sep = "")
+  path.out.specific.ensemble.global.NCAR8.5 <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_NCAR8.5", sep = "")
+  path.out.specific.ensemble.global.IPRC8.5 <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_IPRC8.5", sep = "")
+  
+  path.out.specific.ensemble.local <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_local", sep = "")
+```
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+
+## Getting the points
+```{r}
+setwd(path.in.specific)
+local.df <- read.csv(paste0(spname, "_tr_local_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+local.df # look at data - should include all variables
+```
+
+### Need to project these values as binary "present/not present" values
+
+```{r}
+pres.abs <- local.df[,1:4]
+pres.abs
+```
+
+#COMPARING GLOBAL AND LOCAL MODELS AT CURRENT CLIMATE
+
+## GLOBAL MODEL
+## Getting the global model projected onto HI
+
+```{r}
+setwd(path.out.specific.ensemble.global.current.HIdata)
+final_raster_global <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_global
+
+#plot(final_raster_global)
+```
+Need to standardize the probabilities (from 0to 1)
+```{r}
+maxValue(final_raster_global)
+minValue(final_raster_global)
+```
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(final_raster_global))) {
+    m1 <- final_raster_global[[i]] # get a prob map
+    m2 <- 1/maxValue(final_raster_global[[i]]) * final_raster_global[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(final_raster_global[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  final_raster_global <- stack(layers)
+  final_raster_global
+```
+```{r}
+plot(final_raster_global)
+maxValue(final_raster_global)
+minValue(final_raster_global)
+```
+```{r}
+t1 <- terra::extract(final_raster_global, pres.abs[c("decimalLongitude", "decimalLatitude")])
+#t1[t1 == "NaN"] <- NA
+head(t1, 10) # examine extracted matrix
+```
+
+### Finding Optim Threshold
+```{r}
+thresh_find_df <- cbind(pres.abs, t1) # bind to train dataframe
+thresh_find_df # examine training data frame
+```
+```{r}
+nrow(pres.abs)
+```
+```{r}
+threshold_finder <- bm_FindOptimStat(metric.eval = "ROC", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo)
+threshold_finder
+```
+```{r}
+threshold_finder1 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .30)
+threshold_finder2 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .35)
+threshold_finder3 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .40)
+threshold_finder4 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .45)
+threshold_finder5 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .50)
+threshold_finder6 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .55)
+threshold_finder7 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .60)
+threshold_finder8 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .65)
+threshold_finder9 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .70)
+threshold_finder10 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .75)
+
+threshold_finderB <- rbind(threshold_finder1, threshold_finder2, threshold_finder3, threshold_finder4, threshold_finder5, threshold_finder6, threshold_finder7, threshold_finder8, threshold_finder9, threshold_finder10)
+threshold_finderB
+```
+```{r}
+threshold_finder1 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .450)
+threshold_finder2 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .460)
+threshold_finder3 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .470)
+threshold_finder4 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .480)
+threshold_finder5 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .490)
+threshold_finder6 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .500)
+threshold_finder7 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .510)
+threshold_finder8 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .520)
+threshold_finder9 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .530)
+threshold_finder10 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .50)
+
+threshold_finderC <- rbind(threshold_finder1, threshold_finder2, threshold_finder3, threshold_finder4, threshold_finder5, threshold_finder6, threshold_finder7, threshold_finder8, threshold_finder9, threshold_finder10)
+threshold_finderC
+```
+
+### ASSIGN CUTOFF
+```{r}
+cutoff = 0.51
+
+
+m <- c(0,cutoff,NA,
+                 cutoff, 1.5, 1)
+classmatrix <-  matrix(m, ncol=3, byrow=TRUE)
+```
+```{r}
+
+final_raster_global_binary <- terra::classify(terra::rast(final_raster_global), classmatrix, include.lowest = TRUE)
+plot(final_raster_global_binary)
+```
+```{r}
+setwd(path.out.specific)
+terra::writeRaster(final_raster_global_binary, paste0(spname,"_final_ensemble_raster_binary_currentHIdata.img"),  overwrite = TRUE)
+```
+
+
+## LOCAL MODEL
+## Getting the LOCAL model projected onto HI
+
+```{r}
+setwd(path.out.specific.ensemble.local)
+final_raster_local <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_local
+
+#plot(final_raster_local)
+```
+Need to standardize the probabilities (from 0to 1)
+```{r}
+maxValue(final_raster_local)
+minValue(final_raster_local)
+```
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(final_raster_local))) {
+    m1 <- final_raster_local[[i]] # get a prob map
+    m2 <- 1/maxValue(final_raster_local[[i]]) * final_raster_local[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(final_raster_local[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  final_raster_local <- stack(layers)
+  final_raster_local
+```
+```{r}
+plot(final_raster_local)
+maxValue(final_raster_local)
+minValue(final_raster_local)
+```
+```{r}
+t1 <- terra::extract(final_raster_local, pres.abs[c("decimalLongitude", "decimalLatitude")])
+#t1[t1 == "NaN"] <- NA
+head(t1, 10) # examine extracted matrix
+```
+
+### Finding Optim Threshold
+```{r}
+thresh_find_df <- cbind(pres.abs, t1) # bind to train dataframe
+thresh_find_df # examine training data frame
+```
+```{r}
+nrow(pres.abs)
+```
+```{r}
+threshold_finder <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo)
+threshold_finder
+```
+```{r}
+threshold_finder1 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .30)
+threshold_finder2 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .35)
+threshold_finder3 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .40)
+threshold_finder4 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .45)
+threshold_finder5 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .50)
+threshold_finder6 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .55)
+threshold_finder7 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .60)
+threshold_finder8 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .65)
+threshold_finder9 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .70)
+threshold_finder10 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .75)
+
+threshold_finderB <- rbind(threshold_finder1, threshold_finder2, threshold_finder3, threshold_finder4, threshold_finder5, threshold_finder6, threshold_finder7, threshold_finder8, threshold_finder9, threshold_finder10)
+threshold_finderB
+```
+```{r}
+threshold_finder1 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .650)
+threshold_finder2 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .660)
+threshold_finder3 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .670)
+threshold_finder4 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .680)
+threshold_finder5 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .690)
+threshold_finder6 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .700)
+threshold_finder7 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .710)
+threshold_finder8 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .620)
+threshold_finder9 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .630)
+threshold_finder10 <- bm_FindOptimStat(metric.eval = "TSS", thresh_find_df$scientificName, thresh_find_df$Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo, threshold = .640)
+
+threshold_finderC <- rbind(threshold_finder1, threshold_finder2, threshold_finder3, threshold_finder4, threshold_finder5, threshold_finder6, threshold_finder7, threshold_finder8, threshold_finder9, threshold_finder10)
+threshold_finderC
+```
+
+### ASSIGN CUTOFF
+```{r}
+cutoff = 0.5
+
+
+m <- c(0,cutoff,NA,
+                 cutoff, 1.5, 1)
+classmatrix <-  matrix(m, ncol=3, byrow=TRUE)
+
+
+final_raster_local_binary <- terra::classify(terra::rast(final_raster_local), classmatrix, include.lowest = TRUE)
+plot(final_raster_global_binary)
+plot(final_raster_local_binary)
+
+```
+```{r}
+setwd(path.out.specific)
+terra::writeRaster(final_raster_local_binary, paste0(spname,"_final_ensemble_raster_binary.img"),  overwrite = TRUE)
+```
+
+## COMPARE
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+taking the average of NCAR and IPRC
+```{r}
+combined <- raster::stack(final_raster_NCAR8.5, final_raster_IPRC8.5)
+combined <- mean(combined)
+combined
+```
+
+```{r}
+
+  layers <- {} # initialize (empty) list of raster layers
+  for (i in 1:length(names(combined))) {
+    m1 <- combined[[i]] # get a prob map
+    m2 <- 1/maxValue(combined[[i]]) * combined[[i]] # standardize all probs to max=1
+    m3 <- unlist(strsplit(names(combined[[i]]), "[.]")) # split prob layer name apart
+    names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value
+    assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer
+    layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = "")))
+  }
+  combined <- stack(layers)
+  combined
+```
+```{r}
+plot(combined)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+nowtime <- Sys.time()
+elapsed = nowtime - starttime
+print(elapsed)
+```

@@ -1,0 +1,660 @@
+---
+title: "Andropogon_virginicus - Global Model Outputs"
+author: "Kelsey Brock"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+```{r}
+starttime <- Sys.time()
+```
+
+# Name of Species being modelled
+```{r}
+spname <- "Andropogon_virginicus"
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,error=TRUE,message=FALSE)
+```
+```{r}
+#get the needed packages
+if(!require("pacman")){
+	install.packages("pacman")
+	library(pacman)}
+p_load("dplyr", "PresenceAbsence", "DAAG", "ggplot2", 'tidyr', "terra", "sf", "knitr", "dismo", "gam", "randomForest", "gbm", "biomod2", "CoordinateCleaner")
+```
+```{r}
+# setting paths
+  path.root <- "~/codingwork/fire"  # typical class root dir
+
+  path.in.general <- paste(path.root, "/input", sep = "")
+  
+  path.in.specific <- paste(path.root, "/input/", spname, sep = "")
+  path.out.specific <- paste(path.root, "/output/", spname, sep = "") 
+  path.out.specific.ensemble.global <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_global", sep = "")
+  path.out.specific.ensemble.global.current.HIdata <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_current", sep = "")
+  path.out.specific.ensemble.global.NCAR8.5 <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_NCAR8.5", sep = "")
+  path.out.specific.ensemble.global.IPRC8.5 <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_GLOBAL_IPRC8.5", sep = "")
+  
+  path.out.specific.ensemble.local <- paste(path.root, "/output/", spname, "/", spname, "_ensemble-projection_local", sep = "")
+```
+
+```{r}
+# handy projection string
+prj.wgs84 <- "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"  # epsg:4326
+```
+
+####  Get the Occurrence Data
+
+```{r}
+setwd(path.in.specific)
+global.df <- read.csv(paste(spname, "_tr_global_allvars.csv", sep = ""), header=T, sep=',', stringsAsFactors=F)
+head(global.df) # look at data - should include all variables
+```
+
+```{r}
+table(global.df$scientificName) # examine  frequencies
+```
+
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_global.RData")))
+keep
+```
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+
+```{r}
+setwd(path.in.specific)
+#rasterOptions(maxmemory=1e+07)
+#stack <- get(load("bioclimstack.RData"))
+stack <- terra::rast( paste0(spname, "_bioclimstack.tif"))
+stack
+```
+
+
+```{r}
+stack <- terra::subset(stack, keep)
+#stack3 <- stack(stack)
+stack
+
+#writeRaster(stack3,"tempstack.img", format = "HFA", overwrite = TRUE)
+```
+
+# BIOMOD2
+
+```{r}
+global.df
+```
+
+```{r}
+responsevar <- c("FNETID", "scientificName", "tr.Lon", "tr.Lat" )
+responsevar
+keep
+```
+
+```{r}
+global.df <- global.df %>% dplyr::select(responsevar, keep) 
+global.df
+```
+
+
+Getting a weird error!?!?  this is probably the chunk that's the problem.  Double check indexing
+```{r}
+# Clean data
+myrespvar <- as.numeric(global.df$scientificName)
+myRespName <- spname
+myexplvar <- global.df[, 5:length(global.df)]
+myresp.xy <- global.df[, 3:4]
+clean_data <- BIOMOD_FormatingData(resp.var=myrespvar, expl.var=myexplvar, resp.xy=myresp.xy, resp.name=myRespName)
+```
+
+```{r}
+clean_data
+```
+
+```{r}
+my_models <- c("MAXENT","GLM","GAM","RF","GBM", "MARS", "FDA") # Algorithms to fit the models
+#my_models <- c("GLM","GAM","MARS", "FDA") # Algorithms to fit the models
+```
+
+```{r}
+# Settings for the model algorithms
+model_opt <- BIOMOD_ModelingOptions(GLM=list(type='quadratic', interaction.level=0),GBM=list(n.trees=1000), MAXENT = list(path_to_maxent.jar = "C:/RFolder/maxent.jar",product=FALSE),GAM=list(k=3))
+
+```
+
+MAKE SURE YOU CHANGE # of reps to 10!!
+```{r}
+all_models <- BIOMOD_Modeling(bm.format = clean_data,
+                                    modeling.id = 'global',
+                                    models = my_models,
+                                    bm.options = model_opt,
+                                    CV.strategy = 'random',
+                                    CV.nb.rep = 10,
+                                    CV.perc = 0.80,
+                                    metric.eval = c('TSS','ROC', 'KAPPA'),
+                                    seed.val = 4)
+```
+
+```{r}
+all_models
+```
+
+```{r}
+# get all models evaluation
+myBiomodModelEval <- get_evaluations(all_models)
+myBiomodModelEval
+```
+
+```{r}
+Evals <- bm_PlotEvalMean(all_models, group.by = "algo",
+                    metric.eval = c("ROC","TSS"))
+Evals$plot
+```
+```{r}
+eval_table <- Evals$tab[,1:4] %>% dplyr::rename("ROCmean" = "mean1", "TSSmean" = "mean2")
+eval_table
+setwd(path.out.specific)
+write.csv(eval_table, file = paste0( spname, "eval_table_allalgos_global.csv"))
+```
+
+
+```{r}
+
+mods <- get_built_models(all_models, algo = "GLM" )
+bm_PlotResponseCurves(
+      all_models,
+      models.chosen = mods,
+      new.env = get_formal_data(all_models, "expl.var"),
+      show.variables = get_formal_data(all_models, "expl.var.names"),
+      fixed.var = "mean",
+      do.bivariate = FALSE,
+      do.plot = TRUE,
+      do.progress = TRUE)
+
+```
+
+
+### Project to HI
+
+
+```{r}
+xmin = -160.5613
+xmax =  -154.7061
+ymin = 17.9578 
+ymax =  22.3496
+
+projPoly <- terra::as.polygons(terra::ext(xmin, xmax, ymin, ymax))
+
+projPoly
+```
+
+
+```{r}
+setwd(path.in.general)
+baseline <- list.files(path = path.in.general, pattern = "wc2.1_30s", full.names = T) # list of .img files; $ strips extra
+combined <- terra::rast(baseline)# examine
+
+
+names(combined) <- c("bio1",  "bio12", "bio15")
+
+combined <- terra::subset(combined, keep)
+#stack3 <- stack(stack)
+combined 
+```
+
+```{r}
+library(raster)
+predsProj <- terra::crop(combined, projPoly )
+#predsProj <- raster::mask(predsProj, projPoly)
+#predsProj <- raster::stack(predsProj)
+predsProj
+```
+```{r}
+library(raster)
+predsProj <- raster::stack(predsProj)
+  predsProj
+```
+```{r}
+clean_data
+```
+
+
+```{r}
+# projection over Hawaii under current conditions
+myBiomodProj <- BIOMOD_Projection(
+bm.mod = all_models,
+new.env = predsProj,
+proj.name = 'current',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj
+```
+
+```{r}
+# make some plots sub-selected by str.grep argument
+#plot(myBiomodProj, str.grep = 'GLM')
+```
+
+
+```{r}
+myBiomodEM <- BIOMOD_EnsembleModeling(
+bm.mod = all_models,
+models.chosen = 'all',
+em.by='all',
+metric.select = c('ROC'),
+metric.select.thresh = c(0.65),
+metric.eval = c('ROC', 'TSS', "KAPPA"),
+em.algo = c('EMmean', 'EMcv', 'EMci', 'EMmedian', 'EMca', 'EMwmean'),
+committee.averaging = T,
+prob.mean.weight = T,
+EMwmean = 'proportional' )
+```
+```{r}
+Evals <- bm_PlotEvalMean(myBiomodEM, group.by = "algo",
+                    metric.eval = c("ROC","TSS"))
+Evals$plot
+```
+```{r}
+eval_table <- Evals$tab[,1:4] %>% dplyr::rename("ROCmean" = "mean1", "TSSmean" = "mean2")
+eval_table
+setwd(path.out.specific)
+write.csv(eval_table, file = paste0( spname, "eval_table_ensemble_global.csv"))
+```
+
+
+
+
+```{r}
+myBiomodEF_current <- BIOMOD_EnsembleForecasting(
+bm.em = myBiomodEM,
+bm.proj = myBiomodProj)
+myBiomodEF_current
+```
+
+```{r}
+#plot(myBiomodEF_current, str.grep = 'EMcaByROC')
+```
+```{r}
+get_predictions(myBiomodEF_current)
+```
+
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_current
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection_global')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+setwd(path.out.specific.ensemble.global)
+final_raster_global <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_global
+
+plot(final_raster_global)
+```
+
+
+
+
+
+## Projecting to Hawaii using the HI-specific climate data (Only needed for comparison phase)
+
+### Import raster of current and future climate scenarios
+
+#### Current
+
+```{r}
+setwd(path.in.general)
+stack <- terra::rast( "HI_bioclimstack.tif")
+
+xmin = -160.3722
+xmax =  -154.5714
+ymin =  18.7084
+ymax =  22.4615
+
+local.bufbbox <- extent(xmin, xmax, ymin, ymax)
+
+
+stack <- crop(stack, local.bufbbox )
+stack
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj_currentHIdata <- BIOMOD_Projection(
+bm.mod = all_models,
+new.env = stack,
+proj.name = 'current-HIdata',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj_currentHIdata
+```
+
+```{r}
+myBiomodEF_currentHIdata <- BIOMOD_EnsembleForecasting(
+bm.em = myBiomodEM,
+bm.proj = myBiomodProj_currentHIdata)
+myBiomodEF_currentHIdata
+```
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_currentHIdata
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection_GLOBAL_current')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+setwd(path.out.specific.ensemble.global.current.HIdata)
+final_raster_global <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_global
+
+plot(final_raster_global)
+```
+
+#### FUTURE
+
+#### Future NCAR RCP 8.5
+
+```{r}
+setwd(path.in.general)
+NCAR8.5 <- terra::rast("new_NCAR_future_projection_rcp85_bioclims.tif")
+NCAR8.5
+```
+```{r}
+seasonal <- list.files(path = path.in.general, pattern = "rcp85_NCAR", full.names = T)
+seasonal
+
+seasonal_stack <- terra::rast(seasonal)# examine
+seasonal_stack
+```
+
+```{r}
+NCAR8.5_stack <- c(NCAR8.5, seasonal_stack)
+NCAR8.5_stack
+```
+    
+```{r}
+names(NCAR8.5_stack) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "bio20", "bio21", "bio22", "bio23", "bio24", "bio25", "bio26", "bio27"  )
+names(NCAR8.5_stack)
+NCAR8.5_stack 
+```
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_global.RData")))
+keep
+```
+```{r}
+NCAR8.5_stack <- terra::subset(NCAR8.5_stack, keep)
+#stack3 <- stack(stack)
+NCAR8.5_stack 
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj_NCAR8.5HIdata <- BIOMOD_Projection(
+bm.mod = all_models,
+new.env = NCAR8.5_stack,
+proj.name = 'future-NCAR8.5',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj_NCAR8.5HIdata
+```
+
+```{r}
+myBiomodEF_futureNCAR8.5HIdata <- BIOMOD_EnsembleForecasting(
+bm.em = myBiomodEM,
+bm.proj = myBiomodProj_NCAR8.5HIdata)
+myBiomodEF_futureNCAR8.5HIdata
+```
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_futureNCAR8.5HIdata
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection_GLOBAL_NCAR8.5')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+setwd(path.out.specific.ensemble.global.NCAR8.5)
+final_raster_global <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_global
+
+plot(final_raster_global)
+```
+
+
+
+#### Future IPRC RCP 8.5
+
+```{r}
+setwd(path.in.general)
+IPRC8.5 <- terra::rast("new_IPRC_future_projection_rcp85_bioclims.tif")
+IPRC8.5
+```
+
+```{r}
+seasonal <- list.files(path = path.in.general, pattern = "rcp85_IPRC", full.names = T)
+seasonal
+
+seasonal_stack <- terra::rast(seasonal)# examine
+seasonal_stack
+```
+
+```{r}
+IPRC8.5_stack <- c(IPRC8.5, seasonal_stack)
+IPRC8.5_stack
+```
+    
+```{r}
+names(IPRC8.5_stack) <- c("bio1",  "bio2",  "bio3",  "bio4",  "bio5",  "bio6",  "bio7",  "bio8",  "bio9", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "bio20", "bio21", "bio22", "bio23", "bio24", "bio25", "bio26", "bio27" )
+names(IPRC8.5_stack)
+
+IPRC8.5_stack 
+```
+### Get selected variables during data exploration phase
+```{r}
+setwd(path.in.specific)
+keep <- get(load(file = paste0( spname, "_list_picked_vars_global.RData")))
+keep
+```
+```{r}
+IPRC8.5_stack <- terra::subset(IPRC8.5_stack, keep)
+#stack3 <- stack(stack)
+IPRC8.5_stack 
+```
+
+```{r}
+# projection over the globe under current conditions
+myBiomodProj_IPRC8.5HIdata <- BIOMOD_Projection(
+bm.mod = all_models,
+new.env = IPRC8.5_stack,
+proj.name = 'future-IPRC8.5',
+selected.models = 'all',
+binary.meth = 'TSS',
+compress = 'xz',
+clamping.mask = F,
+output.format = '.img')
+myBiomodProj_IPRC8.5HIdata
+```
+
+```{r}
+myBiomodEF_IPRC8.5HIdata <- BIOMOD_EnsembleForecasting(
+bm.em = myBiomodEM,
+bm.proj = myBiomodProj_IPRC8.5HIdata)
+myBiomodEF_IPRC8.5HIdata
+```
+
+```{r}
+## assign ensemble forecasting object with a new name for notation
+## convenience
+setwd(path.out.specific)
+ensproj <- myBiomodEF_IPRC8.5HIdata
+
+## get the rasterstack of ensemble projections
+ensproj.stack <- get_predictions(ensproj)
+
+## define the output directory
+outdir.ensproj <- paste0(spname, '_ensemble-projection_GLOBAL_IPRC8.5')
+dir.create(outdir.ensproj, showWarnings = FALSE, recursive = TRUE)
+
+## save individual layers on the hard drive
+purrr:::map(
+names(ensproj.stack),
+~ writeRaster(
+ensproj.stack[[.x]],
+overwrite = TRUE,
+filename = file.path(outdir.ensproj, paste0(.x, '.tiff'))
+)
+)
+
+list.files('outdir.ensproj')
+```
+
+```{r}
+setwd(path.out.specific.ensemble.global.IPRC8.5)
+final_raster_global <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff")
+
+final_raster_global
+
+plot(final_raster_global)
+```
+
+
+
+```{r}
+nowtime <- Sys.time()
+elapsed = nowtime - starttime
+print(elapsed)
+```
+
+
+<!-- ```{r} -->
+<!-- newdir <- paste(path.out.specific, "/", outdir.ensproj,  sep = "") -->
+<!-- setwd(newdir) -->
+<!-- final_raster <- raster("Andropogon.virginicus_EMmeanByROC_mergedData_mergedRun_mergedAlgo.tiff") -->
+
+<!-- final_raster -->
+
+<!-- plot(final_raster) -->
+<!-- ``` -->
+
+
+
+<!-- Need to standardize the probabilities (from 0to 1) -->
+
+<!-- ```{r} -->
+<!-- maxValue(final_raster) -->
+<!-- minValue(final_raster) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!--   layers <- {} # initialize (empty) list of raster layers -->
+<!--   for (i in 1:length(names(final_raster))) { -->
+<!--     m1 <- final_raster[[i]] # get a prob map -->
+<!--     m2 <- 1/maxValue(final_raster[[i]]) * final_raster[[i]] # standardize all probs to max=1 -->
+<!--     m3 <- unlist(strsplit(names(final_raster[[i]]), "[.]")) # split prob layer name apart -->
+<!--     names(m2) <- paste(m3[1], ".", m3[2], sep = "")  # assign name to raster value -->
+<!--     assign(paste(m3[1], ".", m3[2], sep = ""), m2) # assign new name to standardized layer -->
+<!--     layers <- c(layers, get(paste(m3[1], ".", m3[2], sep = ""))) -->
+<!--   } -->
+<!--   final_raster <- stack(layers) -->
+<!--   final_raster -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- plot(final_raster) -->
+<!-- maxValue(final_raster) -->
+<!-- minValue(final_raster) -->
+<!-- ``` -->
+
+<!-- uugh. can't get this to work for some reason -->
+<!-- ```{r} -->
+<!-- terra::rast(final_raster) -->
+<!-- setwd(path.out.specific) -->
+<!-- raster::writeRaster(final_raster, filename = paste0( spname,"_final_global_ensemble_raster.img"), overwrite = T) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- setwd(path.out.specific) -->
+<!-- # Save an object to a file -->
+<!-- saveRDS(final_raster, file = paste0( spname,"_final_global_ens_rast.RDS")) -->
+<!-- ``` -->
